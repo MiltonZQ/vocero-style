@@ -46,6 +46,19 @@ const bindConnector = vi.fn(async () => ({
 }));
 
 vi.mock("@/server/agenda/settings", () => ({ getSettings: async () => settings }));
+// 018: la resolución temporal de profesional/servicio (TEMPORAL US2) se simula;
+// su comportamiento real lo cubre tests/unit/default-staff.test.ts.
+vi.mock("@/server/agenda/default-staff", () => ({
+  resolveSoleStaffId: async () => "st_1",
+  resolveDefaultCatalog: async () => ({
+    staffId: "st_1",
+    serviceId: "sv_1",
+    durationMinutes: 30,
+    priceCents: 0,
+    currency: "MXN",
+  }),
+}));
+
 vi.mock("@/server/agenda/availability", () => ({
   findSlot: async () => ({ startUtc: SLOT, endUtc: "…", label: "mié 5 ago, 09:00" }),
   computeAvailability: async () => [],

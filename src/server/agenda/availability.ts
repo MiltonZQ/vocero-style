@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, lte } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, lte, or } from "drizzle-orm";
 import { getDb, schema } from "@/lib/db";
 import { scoped } from "@/lib/db/tenant";
 import {
@@ -13,6 +13,7 @@ import {
   type SlotUtc,
 } from "@/lib/time/slots";
 import { getSettings, type CalendarSettings } from "@/server/agenda/settings";
+import { resolveSoleStaffId } from "@/server/agenda/default-staff";
 
 /**
  * 015 — Motor de disponibilidad:
@@ -83,6 +84,12 @@ export async function computeAvailability(
     excludeBookingId?: string;
     now?: Date;
     settings?: CalendarSettings;
+    /**
+     * 018 — solo cuenta lo ocupado de ESTE profesional (y los bloqueos de todo
+     * el local). TEMPORAL (018 US2): sin él se usa el único profesional activo;
+     * con varios se conserva el comportamiento 015 (todo cuenta como ocupado).
+     */
+    staffId?: string;
   }
 ): Promise<AvailableSlot[]> {
   const settings = opts?.settings ?? (await getSettings(organizationId));
@@ -95,7 +102,11 @@ export async function computeAvailability(
   const candidates = buildCandidateSlots(settings, from, to);
   if (candidates.length === 0) return [];
 
+  // TEMPORAL (018 US2): se reemplaza por selección explícita de profesional
+  const staffId = opts?.staffId ?? (await resolveSoleStaffId(organizationId));
+
   const busy = await getBusyIntervals(organizationId, {
+    staffId,
     fromUtc: zonedWallClockToUtc(from, "00:00", tz) ?? new Date(0),
     toUtc:
       zonedWallClockToUtc(addDaysISO(to, 1), "00:00", tz) ??
@@ -119,13 +130,19 @@ export async function computeAvailability(
  *
  * OJO: esto reduce la ventana de la carrera, no la cierra — entre este SELECT
  * y el INSERT cabe otra confirmación. Quien cierra de verdad es el índice
- * único parcial de `booking` (research D7); esto existe para dar una respuesta
+ * `EXCLUDE` por profesional de `booking` (018; antes, el índice único parcial); esto existe para dar una respuesta
  * útil (con alternativas) en el caso normal.
  */
 export async function findSlot(
   organizationId: string,
   whenISO: string,
-  opts?: { excludeBookingId?: string; now?: Date; settings?: CalendarSettings }
+  opts?: {
+    excludeBookingId?: string;
+    now?: Date;
+    settings?: CalendarSettings;
+    /** 018 — ver `computeAvailability`. */
+    staffId?: string;
+  }
 ): Promise<AvailableSlot | null> {
   const target = Date.parse(whenISO);
   if (Number.isNaN(target)) return null;
@@ -139,13 +156,19 @@ export async function findSlot(
     excludeBookingId: opts?.excludeBookingId,
     now: opts?.now,
     settings,
+    staffId: opts?.staffId,
   });
   return slots.find((s) => Date.parse(s.startUtc) === target) ?? null;
 }
 
 async function getBusyIntervals(
   organizationId: string,
-  input: { fromUtc: Date; toUtc: Date; excludeBookingId?: string }
+  input: {
+    fromUtc: Date;
+    toUtc: Date;
+    excludeBookingId?: string;
+    staffId?: string | null;
+  }
 ): Promise<SlotUtc[]> {
   const db = getDb();
   const rows = await db
@@ -164,6 +187,16 @@ async function getBusyIntervals(
           inArray(schema.booking.status, ["agendada", "realizada"]),
           // Sandbox: una cita de prueba no consume la agenda real.
           eq(schema.booking.isTest, false),
+          // 018: lo del profesional + los bloqueos de todo el local.
+          input.staffId
+            ? or(
+                eq(schema.booking.staffId, input.staffId),
+                and(
+                  eq(schema.booking.kind, "block"),
+                  isNull(schema.booking.staffId)
+                )
+              )
+            : undefined,
           gte(schema.booking.scheduledAt, input.fromUtc),
           lte(schema.booking.scheduledAt, input.toUtc)
         )

@@ -43,6 +43,7 @@ export function bookingErrorStatus(code: BookingError["code"]): number {
     case "not_found":
       return 404;
     case "invalid":
+    case "service_required":
       return 422;
     case "slot_taken":
     case "slot_not_offered":

@@ -22,6 +22,7 @@ import {
   markConnectorAuthError,
 } from "@/server/agenda/connectors";
 import { ConnectorError } from "@/server/agenda/connectors/types";
+import { resolveDefaultCatalog } from "@/server/agenda/default-staff";
 import { moveLeadToStage } from "@/server/leads/stage-history";
 import { publish } from "@/server/events/bus";
 
@@ -45,7 +46,8 @@ export type BookingErrorCode =
   | "slot_taken"
   | "slot_not_offered"
   | "not_found"
-  | "invalid";
+  | "invalid"
+  | "service_required";
 
 export class BookingError extends Error {
   code: BookingErrorCode;
@@ -104,6 +106,17 @@ export async function createSessionBooking(input: {
     throw new BookingError("invalid", "Instante inválido");
   }
 
+  // TEMPORAL (018 US2): se reemplaza por selección explícita. La BD exige
+  // profesional y servicio en toda sesión; mientras las superficies de la 015
+  // no los mandan, se usa el único activo de cada uno.
+  const pick = await resolveDefaultCatalog(input.organizationId);
+  if (!pick) {
+    throw new BookingError(
+      "service_required",
+      "Hay que elegir profesional y servicio"
+    );
+  }
+
   // Contexto de la conversación: contacto y si es del Laboratorio.
   let isTest = false;
   let contactId = input.contactId ?? null;
@@ -156,6 +169,7 @@ export async function createSessionBooking(input: {
   const slot = await findSlot(input.organizationId, input.startUtc, {
     now: input.now,
     settings,
+    staffId: pick.staffId,
   });
   if (!slot) {
     throw new BookingError(
@@ -192,7 +206,12 @@ export async function createSessionBooking(input: {
         conversationId: input.conversationId ?? null,
         leadId: leadRows[0]?.id ?? null,
         scheduledAt: new Date(slot.startUtc),
-        durationMinutes: settings.slotMinutes,
+        // Copias históricas del catálogo (FR-015).
+        staffId: pick.staffId,
+        serviceId: pick.serviceId,
+        durationMinutes: pick.durationMinutes,
+        priceCents: pick.priceCents,
+        currency: pick.currency,
         // Copia histórica: si el negocio cambia de conector, esta cita conserva
         // el que le tocó y sigue hablando con él al moverse o cancelarse.
         connector: settings.connector,
@@ -205,7 +224,7 @@ export async function createSessionBooking(input: {
     // REGLA 2 (segunda mitad): la llave única cierra la carrera exacta. Dos
     // confirmaciones simultáneas del mismo instante — la perdedora sale por
     // aquí, sin cita creada.
-    if (isUniqueViolation(err)) {
+    if (isSlotConflict(err)) {
       throw new BookingError(
         "slot_taken",
         "Ese horario acaba de ocuparse",
@@ -279,7 +298,7 @@ export async function createBlock(input: {
     });
     return block;
   } catch (err) {
-    if (isUniqueViolation(err)) {
+    if (isSlotConflict(err)) {
       throw new BookingError("slot_taken", "Ese horario ya está ocupado");
     }
     throw err;
@@ -304,6 +323,7 @@ export async function rescheduleBooking(input: {
     excludeBookingId: booking.id,
     now: input.now,
     settings,
+    staffId: booking.staffId ?? undefined,
   });
   if (!slot) {
     throw new BookingError("slot_taken", "Ese horario ya no está disponible");
@@ -313,12 +333,17 @@ export async function rescheduleBooking(input: {
   try {
     const updated = await db
       .update(schema.booking)
-      .set({ scheduledAt: new Date(slot.startUtc), updatedAt: new Date() })
+      .set({
+        scheduledAt: new Date(slot.startUtc),
+        // Mover normaliza una cita legada solapada: desde ahora la cubre el EXCLUDE.
+        legacyOverlap: false,
+        updatedAt: new Date(),
+      })
       .where(eq(schema.booking.id, booking.id))
       .returning();
     next = updated[0]!;
   } catch (err) {
-    if (isUniqueViolation(err)) {
+    if (isSlotConflict(err)) {
       throw new BookingError("slot_taken", "Ese horario acaba de ocuparse");
     }
     throw err;
@@ -457,7 +482,7 @@ export async function markBookingStatus(input: {
       .where(eq(schema.booking.id, booking.id));
   } catch (err) {
     // Reactivar a `realizada` un instante que otra cita ya ocupa.
-    if (isUniqueViolation(err)) {
+    if (isSlotConflict(err)) {
       throw new BookingError("slot_taken", "Ese horario ya está ocupado");
     }
     throw err;
@@ -767,16 +792,20 @@ export async function hasActiveBooking(
   return rows.length > 0;
 }
 
-/** 23505 = unique_violation de Postgres. */
-function isUniqueViolation(err: unknown): boolean {
+/** Códigos de Postgres con los que la BASE cierra un choque de hueco. */
+const SLOT_CONFLICT_CODES = new Set([
+  "23505", // unique_violation (índice único de la 015)
+  "23P01", // exclusion_violation (EXCLUDE por profesional, 018)
+]);
+
+/** ¿La BASE rechazó el hueco? Cualquiera de las dos garantías cuenta igual. */
+export function isSlotConflict(err: unknown): boolean {
   if (typeof err !== "object" || err === null) return false;
   const code = (err as { code?: unknown }).code;
-  if (code === "23505") return true;
+  if (typeof code === "string" && SLOT_CONFLICT_CODES.has(code)) return true;
   // Drizzle envuelve el error del driver: el código real viaja en `cause`.
   const cause = (err as { cause?: unknown }).cause;
-  return (
-    typeof cause === "object" &&
-    cause !== null &&
-    (cause as { code?: unknown }).code === "23505"
-  );
+  if (typeof cause !== "object" || cause === null) return false;
+  const inner = (cause as { code?: unknown }).code;
+  return typeof inner === "string" && SLOT_CONFLICT_CODES.has(inner);
 }

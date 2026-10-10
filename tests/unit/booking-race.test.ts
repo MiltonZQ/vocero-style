@@ -43,6 +43,19 @@ vi.mock("@/server/agenda/settings", () => ({
   getSettings: async () => settings,
 }));
 
+// 018: la resolución temporal de profesional/servicio (TEMPORAL US2) se simula;
+// su comportamiento real lo cubre tests/unit/default-staff.test.ts.
+vi.mock("@/server/agenda/default-staff", () => ({
+  resolveSoleStaffId: async () => "st_1",
+  resolveDefaultCatalog: async () => ({
+    staffId: "st_1",
+    serviceId: "sv_1",
+    durationMinutes: 30,
+    priceCents: 0,
+    currency: "MXN",
+  }),
+}));
+
 vi.mock("@/server/agenda/availability", () => ({
   // El hueco se ve libre al re-validar: la otra confirmación aún no escribía.
   findSlot: async () => ({ startUtc: SLOT, endUtc: "…", label: "mié 5 ago, 09:00" }),
@@ -183,6 +196,25 @@ describe("la carrera del hueco", () => {
     // Y quedan REGISTRADAS como la nueva oferta: el cliente puede aceptar una
     // de inmediato y la validación seguirá siendo válida.
     expect(replaceOffers).toHaveBeenCalledOnce();
+    expect(inserted).toHaveLength(0);
+  });
+
+  it("un 23P01 (EXCLUDE por profesional, 018) también es slot_taken", async () => {
+    const { createSessionBooking, BookingError } = await import(
+      "@/server/agenda/service"
+    );
+    primeLookups();
+    insertThrows = { code: "23P01" };
+
+    const promise = createSessionBooking({
+      organizationId: "org_1",
+      conversationId: "cv_1",
+      startUtc: SLOT,
+      source: "ai",
+      requireOffer: false,
+    });
+    await expect(promise).rejects.toBeInstanceOf(BookingError);
+    await expect(promise).rejects.toMatchObject({ code: "slot_taken" });
     expect(inserted).toHaveLength(0);
   });
 
