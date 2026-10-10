@@ -5,6 +5,7 @@ import { scoped } from "@/lib/db/tenant";
 import { requireBotKey, resolveInstanceOrg } from "@/server/bot/auth";
 import { agendaDisabledResponse, agendaEnabled } from "@/server/agenda/flag";
 import { computeAvailability } from "@/server/agenda/availability";
+import { resolveAvailabilityTarget } from "@/server/agenda/default-staff";
 import { getSettings } from "@/server/agenda/settings";
 import { daysWithAgenda, spreadByDay } from "@/server/agenda/spread";
 import { replaceOffers } from "@/server/agenda/offers";
@@ -75,7 +76,25 @@ export async function GET(req: Request) {
 
   const settings = await getSettings(organizationId);
   const now = new Date();
-  const all = await computeAvailability(organizationId, { settings, now });
+  const target = await resolveAvailabilityTarget(organizationId);
+  if (!target.ok) {
+    return Response.json(
+      {
+        error: {
+          code: "service_required",
+          message: "Hay que elegir profesional y servicio",
+        },
+        services: target.services,
+      },
+      { status: 422 }
+    );
+  }
+  const all = await computeAvailability(organizationId, {
+    settings,
+    now,
+    staffId: target.staffId,
+    serviceId: target.serviceId,
+  });
   const slots = spreadByDay(all, {
     timezone: settings.timezone,
     limit,

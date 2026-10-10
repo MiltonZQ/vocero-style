@@ -96,3 +96,126 @@ export async function resolveDefaultCatalog(
     currency: sv.currency,
   };
 }
+
+export type AvailabilityMeta = {
+  staffId: string;
+  staffName: string;
+  serviceId: string;
+  durationMinutes: number;
+  priceCents: number;
+};
+
+/** Nombre, precio y duración efectiva del par que ya se ofreció en un hueco. */
+export async function loadAvailabilityMeta(
+  organizationId: string,
+  staffId: string,
+  serviceId: string
+): Promise<AvailabilityMeta | null> {
+  const db = getDb();
+  const staffRows = await db
+    .select({ displayName: schema.staff.displayName })
+    .from(schema.staff)
+    .where(
+      scoped(schema.staff.organizationId, organizationId, eq(schema.staff.id, staffId))
+    )
+    .limit(1);
+  const serviceRows = await db
+    .select({
+      priceCents: schema.service.priceCents,
+      durationMinutes: schema.service.durationMinutes,
+    })
+    .from(schema.service)
+    .where(
+      scoped(
+        schema.service.organizationId,
+        organizationId,
+        eq(schema.service.id, serviceId)
+      )
+    )
+    .limit(1);
+  const own = await db
+    .select({ durationMinutes: schema.staffService.durationMinutes })
+    .from(schema.staffService)
+    .where(
+      scoped(
+        schema.staffService.organizationId,
+        organizationId,
+        and(
+          eq(schema.staffService.staffId, staffId),
+          eq(schema.staffService.serviceId, serviceId)
+        )
+      )
+    )
+    .limit(1);
+  const staff = staffRows[0];
+  const service = serviceRows[0];
+  if (!staff || !service) return null;
+  return {
+    staffId,
+    staffName: staff.displayName,
+    serviceId,
+    durationMinutes: own[0]?.durationMinutes ?? service.durationMinutes,
+    priceCents: service.priceCents,
+  };
+}
+
+export type ActiveServiceOption = {
+  id: string;
+  name: string;
+  durationMinutes: number;
+};
+
+/** Active catalog, for a `service_required` response. */
+export async function listActiveServices(
+  organizationId: string
+): Promise<ActiveServiceOption[]> {
+  return getDb()
+    .select({
+      id: schema.service.id,
+      name: schema.service.name,
+      durationMinutes: schema.service.durationMinutes,
+    })
+    .from(schema.service)
+    .where(
+      scoped(
+        schema.service.organizationId,
+        organizationId,
+        eq(schema.service.active, true)
+      )
+    )
+    .orderBy(asc(schema.service.position), asc(schema.service.name));
+}
+
+/**
+ * 015 edges pass nothing and get the sole active staff + service.
+ * An explicit pair is kept. Anything ambiguous returns the active services.
+ */
+export async function resolveAvailabilityTarget(
+  organizationId: string,
+  input: { staffId?: string | null; serviceId?: string | null } = {}
+): Promise<
+  | { ok: true; staffId: string; serviceId: string }
+  | { ok: false; services: ActiveServiceOption[] }
+> {
+  const requestedStaff = input.staffId || null;
+  const requestedService = input.serviceId || null;
+  if (requestedStaff && requestedService) {
+    return { ok: true, staffId: requestedStaff, serviceId: requestedService };
+  }
+
+  const [soleStaff, services] = await Promise.all([
+    resolveSoleStaffId(organizationId),
+    listActiveServices(organizationId),
+  ]);
+
+  if (!requestedService) {
+    const only = services[0];
+    if (soleStaff && services.length === 1 && only && (!requestedStaff || requestedStaff === soleStaff)) {
+      return { ok: true, staffId: soleStaff, serviceId: only.id };
+    }
+    return { ok: false, services };
+  }
+
+  if (!soleStaff) return { ok: false, services };
+  return { ok: true, staffId: soleStaff, serviceId: requestedService };
+}

@@ -101,8 +101,10 @@ function chain(rows: unknown[]) {
   return c;
 }
 
-vi.mock("@/lib/db", () => ({
-  getDb: () => ({
+const column = (name: string) => ({ name });
+
+vi.mock("@/lib/db", () => {
+  const db = {
     select: () => chain(selectRows.shift() ?? []),
     insert: () => ({
       values: (v: unknown) => ({
@@ -142,19 +144,60 @@ vi.mock("@/lib/db", () => ({
         }),
       }),
     }),
-  }),
-  schema: {
-    booking: {},
-    conversation: { organizationId: "organizationId", id: "id" },
-    contact: { organizationId: "organizationId", id: "id", name: "name" },
-    lead: { organizationId: "organizationId", contactId: "contactId" },
-    pipelineStage: { organizationId: "organizationId" },
-    offeredSlot: {},
-  },
-}));
+    execute: async () => [],
+    transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(db),
+  };
+  return {
+    getDb: () => db,
+    schema: {
+      booking: {
+        organizationId: column("organizationId"),
+        id: column("id"),
+        kind: column("kind"),
+        staffId: column("staffId"),
+        status: column("status"),
+        isTest: column("isTest"),
+        legacyOverlap: column("legacyOverlap"),
+        scheduledAt: column("scheduledAt"),
+        durationMinutes: column("durationMinutes"),
+      },
+      staff: {
+        organizationId: column("organizationId"),
+        id: column("id"),
+        active: column("active"),
+        weeklyHours: column("weeklyHours"),
+      },
+      service: {
+        organizationId: column("organizationId"),
+        id: column("id"),
+        active: column("active"),
+        durationMinutes: column("durationMinutes"),
+        priceCents: column("priceCents"),
+        currency: column("currency"),
+      },
+      staffService: {
+        organizationId: column("organizationId"),
+        staffId: column("staffId"),
+        serviceId: column("serviceId"),
+        durationMinutes: column("durationMinutes"),
+      },
+      conversation: { organizationId: column("organizationId"), id: column("id"), contactId: column("contactId"), isTest: column("isTest") },
+      contact: { organizationId: column("organizationId"), id: column("id"), name: column("name") },
+      lead: { organizationId: column("organizationId"), contactId: column("contactId"), id: column("id") },
+      pipelineStage: { organizationId: column("organizationId") },
+      offeredSlot: {},
+    },
+  };
+});
 
 function primeLookups() {
-  // 1) la conversación, 2) el nombre del contacto, 3) el lead
+  // Catálogo del profesional y el servicio, luego la conversación, el nombre y el lead.
+  selectRows.push([{ id: "st_1", active: true, weeklyHours: null }]);
+  selectRows.push([
+    { id: "sv_1", active: true, durationMinutes: 30, priceCents: 0, currency: "MXN" },
+  ]);
+  selectRows.push([{ durationMinutes: null }]);
+  selectRows.push([]);
   selectRows.push([{ contactId: "ct_1", isTest: false }]);
   selectRows.push([{ name: "Ana" }]);
   selectRows.push([{ id: "ld_1" }]);
@@ -182,6 +225,8 @@ describe("la carrera del hueco", () => {
       startUtc: SLOT,
       source: "ai",
       requireOffer: true,
+      staffId: "st_1",
+      serviceId: "sv_1",
     });
 
     await expect(promise).rejects.toBeInstanceOf(BookingError);
@@ -212,6 +257,8 @@ describe("la carrera del hueco", () => {
       startUtc: SLOT,
       source: "ai",
       requireOffer: false,
+      staffId: "st_1",
+      serviceId: "sv_1",
     });
     await expect(promise).rejects.toBeInstanceOf(BookingError);
     await expect(promise).rejects.toMatchObject({ code: "slot_taken" });
@@ -232,6 +279,8 @@ describe("la carrera del hueco", () => {
         startUtc: SLOT,
         source: "ai",
         requireOffer: true,
+        staffId: "st_1",
+        serviceId: "sv_1",
       })
     ).rejects.toMatchObject({ code: "slot_taken" });
   });
@@ -248,6 +297,8 @@ describe("la carrera del hueco", () => {
         startUtc: SLOT,
         source: "ai",
         requireOffer: true,
+        staffId: "st_1",
+        serviceId: "sv_1",
       })
     ).rejects.toMatchObject({ code: "23503" });
   });
@@ -263,6 +314,8 @@ describe("la carrera del hueco", () => {
       startUtc: "2026-08-05T20:00:00.000Z",
       source: "ai",
       requireOffer: true,
+      staffId: "st_1",
+      serviceId: "sv_1",
     });
 
     await expect(promise).rejects.toMatchObject({ code: "slot_not_offered" });

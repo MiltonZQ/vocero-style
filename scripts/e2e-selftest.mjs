@@ -2282,7 +2282,7 @@ async function us1EquipoCatalogo({ ownerJar, jarA }) {
  * US5 (T089) — foto y horario. La rejilla de 45 minutos no se afirma aquí:
  * el motor de disponibilidad es la slice 5.
  */
-async function us5FotoYHorario({ ownerJar, jarA }) {
+async function us5FotoYHorario({ ownerJar, jarA, sql = null, orgId = null, serviceId = null }) {
   console.log("  -- US5 foto y horario (sin rejilla de disponibilidad)");
   const png = Buffer.from([
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
@@ -2377,12 +2377,31 @@ async function us5FotoYHorario({ ownerJar, jarA }) {
     `${horas.res.status} ${JSON.stringify(horas.json)}`
   );
 
-  pendiente(
-    "huecos de 45 minutos en availability",
-    false,
-    "Slice 5",
-    "la rejilla llega con el motor de disponibilidad"
-  );
+  if (sql && orgId && serviceId) {
+    await sql`insert into staff_service (staff_id, service_id, organization_id, duration_minutes)
+      values (${ISO.A.staff}, ${serviceId}, ${orgId}, 45)
+      on conflict (staff_id, service_id) do update set duration_minutes = 45`;
+    try {
+      const from = mexicoDate(2);
+      const disp = await api(
+        `/api/calendar/availability?staffId=${ISO.A.staff}&serviceId=${serviceId}&from=${from}&to=${from}`,
+        { jar: ownerJar }
+      );
+      const slots = disp.json?.slots ?? [];
+      ok(
+        "huecos de 45 minutos en availability",
+        disp.res.status === 200 &&
+          slots.length > 0 &&
+          slots.every((s) => Date.parse(s.endUtc) - Date.parse(s.startUtc) === 45 * 60_000),
+        `${disp.res.status} n=${slots.length} ${JSON.stringify(slots[0])}`
+      );
+    } finally {
+      await sql`update staff_service set duration_minutes = null
+        where staff_id = ${ISO.A.staff} and service_id = ${serviceId}`;
+    }
+  } else {
+    ok("huecos de 45 minutos en availability", false, "sin servicio para medir la duración efectiva");
+  }
 }
 
 const ISO_PASS = "password-aislamiento-123";
@@ -2394,6 +2413,435 @@ const ISO = {
 };
 const ISO_STAFF_IDS = [ISO.A.staff, ISO.B.staff, ISO.D.staff];
 const ISO_BOOKING_IDS = [ISO.A.booking, ISO.B.booking];
+const SLICE5_NOTE = "e2e-slice5";
+
+/** Fecha civil en America/Mexico_City (UTC-6, sin horario de verano). */
+function mexicoDate(offsetDays) {
+  const shifted = new Date(Date.now() + offsetDays * 86_400_000 - 6 * 3_600_000);
+  return shifted.toISOString().slice(0, 10);
+}
+
+/**
+ * Inicios en días hábiles, 09:00–cierre Ciudad de México, separados por la
+ * duración para que pares distintos no se pisen entre sí.
+ */
+function mexicoStarts(count, durationMin) {
+  const starts = [];
+  const cursor = new Date();
+  cursor.setUTCHours(15, 0, 0, 0);
+  cursor.setUTCDate(cursor.getUTCDate() + 2);
+  const step = Math.max(5, durationMin) * 60_000;
+  while (starts.length < count) {
+    const dow = cursor.getUTCDay();
+    if (dow !== 0 && dow !== 6) {
+      const open = cursor.getTime();
+      const close = open + 9 * 60 * 60_000;
+      for (let t = open; t + step <= close && starts.length < count; t += step) {
+        starts.push(new Date(t).toISOString());
+      }
+    }
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return starts;
+}
+
+function pgCode(err) {
+  return err?.code ?? err?.cause?.code ?? "";
+}
+
+function sessionBody(staffId, serviceId, startUtc, phone) {
+  return {
+    kind: "session",
+    staffId,
+    serviceId,
+    contact: { name: "Slice 5", phone },
+    startUtc,
+    notes: SLICE5_NOTE,
+  };
+}
+
+/** Lee el SSE hasta abortar. Resuelve cuando llega el comentario de conexión. */
+async function abrirStream(jar) {
+  const ctrl = new AbortController();
+  const res = await fetch(`${BASE}/api/events`, {
+    headers: { cookie: jar.cookie, origin: BASE },
+    signal: ctrl.signal,
+  });
+  const events = [];
+  let buf = "";
+  let connected = false;
+  const reader = res.body?.getReader();
+  const dec = new TextDecoder();
+  const pump = (async () => {
+    if (!reader) return;
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const parts = buf.split("\n\n");
+        buf = parts.pop() ?? "";
+        for (const part of parts) {
+          if (part.includes("conectado")) connected = true;
+          const eventLine = part.split("\n").find((line) => line.startsWith("event: "));
+          const dataLine = part.split("\n").find((line) => line.startsWith("data: "));
+          if (!eventLine || !dataLine) continue;
+          try {
+            events.push({ type: eventLine.slice(7), data: JSON.parse(dataLine.slice(6)) });
+          } catch {
+            // comentario o heartbeat
+          }
+        }
+      }
+    } catch {
+      // abort del lector
+    }
+  })();
+  const ready = await hasta(() => connected || buf.includes("conectado"), 5000, 40);
+  return {
+    status: res.status,
+    events,
+    ready,
+    close: async () => {
+      ctrl.abort();
+      await pump;
+    },
+  };
+}
+
+async function slice5ReservasYTablero({ ownerJar, jarA, sql, orgId, svc, createdStaffIds }) {
+  console.log("  -- Slice 5: escritura aislada, no solapamiento y tablero");
+  const duration = Number(svc.duration_minutes ?? 30);
+  await sql`insert into staff_service (staff_id, service_id, organization_id)
+    values (${ISO.A.staff}, ${svc.id}, ${orgId}), (${ISO.B.staff}, ${svc.id}, ${orgId})
+    on conflict (staff_id, service_id) do nothing`;
+
+  const starts = mexicoStarts(112, duration);
+  let phoneN = 0;
+  const phone = () => `521555${String(phoneN++).padStart(7, "0")}`;
+  const postSession = (jar, staffId, startUtc, serviceId = svc.id) =>
+    apiAsync("/api/bookings", {
+      method: "POST",
+      jar,
+      body: JSON.stringify(sessionBody(staffId, serviceId, startUtc, phone())),
+    });
+
+  const [before] = await sql`select status, scheduled_at from booking where id = ${ISO.B.booking}`;
+  for (const [name, body] of [
+    ["cancel", { action: "cancel" }],
+    ["reschedule", { action: "reschedule", startUtc: starts[0] }],
+    ["status", { action: "status", status: "realizada" }],
+  ]) {
+    const r = await apiAsync(`/api/bookings/${ISO.B.booking}`, {
+      method: "PATCH",
+      jar: jarA,
+      body: JSON.stringify(body),
+    });
+    ok(`staff A PATCH ${name} de la cita de B → 404`, r.res.status === 404, `status ${r.res.status}`);
+  }
+  const [after] = await sql`select status, scheduled_at from booking where id = ${ISO.B.booking}`;
+  ok(
+    "la cita de B no cambió",
+    before?.status === after?.status &&
+      new Date(before.scheduled_at).getTime() === new Date(after.scheduled_at).getTime()
+  );
+
+  const ajeno = await postSession(jarA, ISO.B.staff, starts[0]);
+  ok("staff A POST con staffId de B → 403", ajeno.res.status === 403, `status ${ajeno.res.status}`);
+
+  const noOffer = await api("/api/services", {
+    method: "POST",
+    jar: ownerJar,
+    body: JSON.stringify({
+      name: "Slice5 no ofrecido",
+      durationMinutes: 30,
+      priceCents: 100,
+      currency: "MXN",
+    }),
+  });
+  const noOfferId = noOffer.json?.service?.id;
+  if (noOfferId) {
+    const denied = await postSession(jarA, ISO.A.staff, starts[1], noOfferId);
+    ok(
+      "staff A POST un servicio que no ofrece → 422 service_not_offered",
+      denied.res.status === 422 && denied.json?.error?.code === "service_not_offered",
+      `${denied.res.status} ${JSON.stringify(denied.json)}`
+    );
+    await api(`/api/services/${noOfferId}`, { method: "DELETE", jar: ownerJar });
+  } else {
+    ok("alta del servicio que A no ofrece", false, `${noOffer.res.status} ${JSON.stringify(noOffer.json)}`);
+  }
+
+  const patchB = await apiAsync(`/api/staff/${ISO.B.staff}`, {
+    method: "PATCH",
+    jar: jarA,
+    body: JSON.stringify({ displayName: "hack" }),
+  });
+  ok(
+    "staff A PATCH /api/staff/{B} → 403 o 404",
+    patchB.res.status === 403 || patchB.res.status === 404,
+    `status ${patchB.res.status}`
+  );
+  const [nameB] = await sql`select display_name from staff where id = ${ISO.B.staff}`;
+  ok("el nombre de B sigue igual", nameB?.display_name === ISO.B.name, nameB?.display_name);
+
+  const reassign = await apiAsync(`/api/bookings/${ISO.A.booking}`, {
+    method: "PATCH",
+    jar: jarA,
+    body: JSON.stringify({ action: "reassign", staffId: ISO.B.staff }),
+  });
+  ok("staff A PATCH reassign → 403", reassign.res.status === 403, `status ${reassign.res.status}`);
+
+  const propia = await postSession(jarA, ISO.A.staff, starts[2]);
+  ok(
+    "staff A agenda para sí mismo → 201",
+    propia.res.status === 201,
+    `${propia.res.status} ${JSON.stringify(propia.json)}`
+  );
+
+  const stream = await abrirStream(jarA);
+  const deA = await postSession(ownerJar, ISO.A.staff, starts[3]);
+  const deB = await postSession(ownerJar, ISO.B.staff, starts[3]);
+  await sleep(600);
+  await stream.close();
+  const updates = stream.events.filter((event) => event.type === "booking.updated");
+  ok(
+    "SSE de A solo emite booking.updated propios, sin datos del cliente",
+    stream.ready &&
+      deA.res.status === 201 &&
+      updates.some(
+        (event) =>
+          event.data?.bookingId === deA.json?.booking?.id &&
+          event.data?.staffId === ISO.A.staff &&
+          (event.data?.scope === "staff" || event.data?.scope === "own") &&
+          event.data?.contact == null &&
+          event.data?.name == null
+      ) &&
+      !updates.some((event) => event.data?.bookingId === deB.json?.booking?.id),
+    `ready=${stream.ready} A=${deA.res.status} B=${deB.res.status} ${JSON.stringify(updates)}`
+  );
+
+  console.log("  -- T050 no solapamiento");
+  let pairsOk = 0;
+  for (let i = 0; i < 100; i++) {
+    const start = starts[10 + i];
+    const [left, right] = await Promise.all([
+      postSession(ownerJar, ISO.A.staff, start),
+      postSession(ownerJar, ISO.A.staff, start),
+    ]);
+    const won = [left, right].filter((r) => r.res.status === 201);
+    const lost = [left, right].filter((r) => r.res.status === 409);
+    if (
+      won.length === 1 &&
+      lost.length === 1 &&
+      lost[0].json?.error?.code === "slot_taken" &&
+      Array.isArray(lost[0].json?.slots)
+    ) {
+      pairsOk++;
+    }
+  }
+  ok(
+    "100 pares solapados del mismo profesional: un 201 y un 409 slot_taken con slots hermano",
+    pairsOk === 100,
+    `${pairsOk}/100`
+  );
+
+  const [dosA, dosB] = await Promise.all([
+    postSession(ownerJar, ISO.A.staff, starts[4]),
+    postSession(ownerJar, ISO.B.staff, starts[4]),
+  ]);
+  ok(
+    "el mismo horario con profesionales distintos → dos 201",
+    dosA.res.status === 201 && dosB.res.status === 201,
+    `${dosA.res.status}/${dosB.res.status}`
+  );
+
+  const overlapStart = starts[5];
+  const ovIds = ["bk_e2es5ov1", "bk_e2es5ov2"];
+  await sql`delete from booking where id = any(${ovIds})`;
+  const inserted = await Promise.allSettled(
+    ovIds.map(
+      (id) => sql`insert into booking (
+        id, organization_id, kind, status, scheduled_at, duration_minutes,
+        staff_id, service_id, price_cents, currency, is_test, legacy_overlap, notes
+      ) values (
+        ${id}, ${orgId}, 'session', 'agendada', ${overlapStart}, ${duration},
+        ${ISO.A.staff}, ${svc.id}, 0, 'MXN', false, false, ${SLICE5_NOTE}
+      )`
+    )
+  );
+  const fulfilled = inserted.filter((r) => r.status === "fulfilled");
+  const rejected = inserted.filter((r) => r.status === "rejected");
+  ok(
+    "dos INSERT solapados del mismo staff → uno y un 23P01",
+    fulfilled.length === 1 && rejected.length === 1 && pgCode(rejected[0].reason) === "23P01",
+    rejected.map((r) => pgCode(r.reason)).join(",") || "sin rechazo"
+  );
+
+  const blockStart = starts[6];
+  const [blockRes, sessRes] = await Promise.all([
+    apiAsync("/api/bookings", {
+      method: "POST",
+      jar: ownerJar,
+      body: JSON.stringify({
+        kind: "block",
+        staffId: null,
+        startUtc: blockStart,
+        durationMinutes: duration,
+        notes: SLICE5_NOTE,
+      }),
+    }),
+    postSession(ownerJar, ISO.A.staff, blockStart),
+  ]);
+  const sessionsInside = await sql`select id from booking
+    where organization_id = ${orgId}
+      and kind = 'session'
+      and staff_id = ${ISO.A.staff}
+      and status in ('agendada', 'realizada')
+      and is_test = false
+      and notes = ${SLICE5_NOTE}
+      and scheduled_at = ${blockStart}`;
+  const blockRows = await sql`select id from booking
+    where organization_id = ${orgId}
+      and kind = 'block'
+      and staff_id is null
+      and notes = ${SLICE5_NOTE}
+      and scheduled_at = ${blockStart}`;
+  const conflictIds = new Set((blockRes.json?.conflicts ?? []).map((row) => row.bookingId));
+  const leaked =
+    blockRows.length > 0 &&
+    sessionsInside.some((row) => !conflictIds.has(row.id));
+  ok(
+    "bloqueo del local y sesión simultáneos no dejan una sesión dentro sin listarla",
+    !leaked,
+    `block=${blockRes.res.status} session=${sessRes.res.status} inside=${sessionsInside.length} blocks=${blockRows.length} conflicts=${conflictIds.size}`
+  );
+
+  const freeStart = starts[7];
+  const first = await postSession(ownerJar, ISO.A.staff, freeStart);
+  const cancelled = first.json?.booking?.id
+    ? await api(`/api/bookings/${first.json.booking.id}`, {
+        method: "PATCH",
+        jar: ownerJar,
+        body: JSON.stringify({ action: "cancel" }),
+      })
+    : { res: { status: 0 } };
+  const second = await postSession(ownerJar, ISO.A.staff, freeStart);
+  ok(
+    "una cita cancelada libera el hueco",
+    first.res.status === 201 && cancelled.res.status === 200 && second.res.status === 201,
+    `${first.res.status}/${cancelled.res.status}/${second.res.status}`
+  );
+
+  const occupied = await postSession(ownerJar, ISO.B.staff, starts[8]);
+  const movable = await postSession(ownerJar, ISO.B.staff, starts[9]);
+  const moved = await api(`/api/bookings/${movable.json?.booking?.id}`, {
+    method: "PATCH",
+    jar: ownerJar,
+    body: JSON.stringify({ action: "reschedule", startUtc: starts[8] }),
+  });
+  ok(
+    "PATCH reschedule a un hueco ocupado → 409",
+    occupied.res.status === 201 &&
+      movable.res.status === 201 &&
+      moved.res.status === 409 &&
+      moved.json?.error?.code === "slot_taken",
+    `${moved.res.status} ${JSON.stringify(moved.json)}`
+  );
+
+  const testId = "bk_e2es5test";
+  const testStart = starts[110];
+  await sql`delete from booking where id = ${testId}`;
+  await sql`insert into booking (
+      id, organization_id, kind, status, scheduled_at, duration_minutes,
+      staff_id, service_id, price_cents, currency, is_test, legacy_overlap, notes
+    ) values (
+      ${testId}, ${orgId}, 'session', 'agendada', ${testStart}, ${duration},
+      ${ISO.A.staff}, ${svc.id}, 0, 'MXN', true, false, ${SLICE5_NOTE}
+    )`;
+  const overTest = await postSession(ownerJar, ISO.A.staff, testStart);
+  ok(
+    "una cita is_test no ocupa el hueco",
+    overTest.res.status === 201,
+    `${overTest.res.status} ${JSON.stringify(overTest.json)}`
+  );
+
+  console.log("  -- T077 tablero");
+  const jarR = newJar();
+  const loginR = await login(jarR, "iso-reception@vocero.test", ISO_PASS);
+  ok("recepción de US4 inicia sesión", loginR.res.status === 200, `status ${loginR.res.status}`);
+  const third = await api("/api/staff", {
+    method: "POST",
+    jar: ownerJar,
+    body: JSON.stringify({ displayName: "Slice5 tercero", jobTitle: "Colorista", color: "#aa3300" }),
+  });
+  const thirdId = third.json?.staff?.id;
+  ok("alta del tercer profesional → 201", third.res.status === 201 && Boolean(thirdId), `${third.res.status}`);
+  if (thirdId) {
+    createdStaffIds.push(thirdId);
+    await sql`insert into staff_service (staff_id, service_id, organization_id)
+      values (${thirdId}, ${svc.id}, ${orgId})
+      on conflict (staff_id, service_id) do nothing`;
+  }
+  await sql`update staff set job_title = 'Barbero' where id = ${ISO.A.staff} or id = ${ISO.B.staff}`;
+
+  const at10 = "2027-06-02T16:00:00.000Z";
+  const trio = thirdId
+    ? await Promise.all([
+        postSession(jarR, ISO.A.staff, at10),
+        postSession(jarR, ISO.B.staff, at10),
+        postSession(jarR, thirdId, at10),
+      ])
+    : [];
+  ok(
+    "recepción agenda 3 citas a las 10:00 con 3 profesionales → tres 201",
+    trio.length === 3 && trio.every((r) => r.res.status === 201),
+    trio.map((r) => r.res.status).join(",")
+  );
+  const repeat = await postSession(jarR, ISO.A.staff, at10);
+  ok(
+    "la misma hora con el mismo profesional → 409",
+    repeat.res.status === 409 && repeat.json?.error?.code === "slot_taken",
+    `${repeat.res.status} ${JSON.stringify(repeat.json)}`
+  );
+
+  const board = await api("/api/calendar/board?from=2027-06-02&days=1", { jar: jarR });
+  const columns = board.json?.columns ?? [];
+  const wanted = [ISO.A.staff, ISO.B.staff, thirdId].filter(Boolean);
+  const hasBooking = (column, id) =>
+    column.staffId === id &&
+    (column.days ?? []).some((day) =>
+      (day.bookings ?? []).some((b) => Date.parse(b.startUtc) === Date.parse(at10))
+    );
+  ok("recepción GET /api/calendar/board → 200", board.res.status === 200, `status ${board.res.status}`);
+  ok(
+    "el tablero devuelve las tres citas en tres columnas",
+    wanted.length === 3 && wanted.every((id) => columns.some((column) => hasBooking(column, id))),
+    `columnas=${columns.length}`
+  );
+  const staffBoard = await apiAsync("/api/calendar/board?from=2027-06-02&days=1", { jar: jarA });
+  ok("staff GET /api/calendar/board → 403", staffBoard.res.status === 403, `status ${staffBoard.res.status}`);
+  const filtered = await api("/api/calendar/board?from=2027-06-02&days=1&jobTitle=colorista", {
+    jar: jarR,
+  });
+  const filteredColumns = filtered.json?.columns ?? [];
+  ok(
+    "el filtro jobTitle reduce las columnas",
+    filtered.res.status === 200 &&
+      filteredColumns.length > 0 &&
+      filteredColumns.length < columns.length &&
+      filteredColumns.every((column) => column.jobTitle === "colorista"),
+    `full=${columns.length} filtered=${filteredColumns.length}`
+  );
+  await sql`update staff set job_title = null where id = ${ISO.A.staff} or id = ${ISO.B.staff}`;
+
+  pendiente(
+    "una cita creada por el agente aparece en el tablero vía SSE en menos de 5 s",
+    false,
+    "Slice 5",
+    "hace falta una conversación wa-mock hasta que el agente reserve; el SSE del staff ya se afirma arriba"
+  );
+}
 
 async function aislamientoChecks() {
   const encendida = /^(on|1|true|si|sí|yes)$/i.test(
@@ -2417,8 +2865,18 @@ async function aislamientoChecks() {
   const { default: postgres } = await import("postgres");
   const sql = postgres(dbUrl, { max: 2 });
 
+  let orgId;
+  const createdStaffIds = [];
   const limpiar = async () => {
+    if (orgId) {
+      await sql`delete from booking where organization_id = ${orgId} and notes = ${SLICE5_NOTE}`;
+      await sql`delete from booking where organization_id = ${orgId} and id like 'bk_e2es5%'`;
+    }
     await sql`delete from booking where id = any(${ISO_BOOKING_IDS})`;
+    if (createdStaffIds.length) {
+      await sql`delete from booking where staff_id = any(${createdStaffIds})`;
+      await sql`delete from staff where id = any(${createdStaffIds})`;
+    }
     await sql`delete from staff where id = any(${ISO_STAFF_IDS})`;
   };
 
@@ -2454,8 +2912,8 @@ async function aislamientoChecks() {
       "las cuentas de equipo nacen con rol `staff`",
       Object.values(ISO).every((a) => byEmail[a.email]?.role === "staff")
     );
-    const orgId = byEmail[ISO.A.email]?.organization_id;
-    const [svc] = await sql`select id from service where organization_id = ${orgId} order by position limit 1`;
+    orgId = byEmail[ISO.A.email]?.organization_id;
+    const [svc] = await sql`select id, duration_minutes from service where organization_id = ${orgId} order by position limit 1`;
     if (!orgId || !svc) {
       ok("siembra: organización y servicio base existen", false);
       return;
@@ -2525,10 +2983,17 @@ async function aislamientoChecks() {
       body: JSON.stringify({ name: "x", email: "x@vocero.test", password: "password-x-123", role: "staff" }),
     });
     ok("staff A no puede crear cuentas de equipo → 403", nuevoEquipo.res.status === 403, `status ${nuevoEquipo.res.status}`);
-    // El tablero global lo crea la Slice 5: hasta entonces la ruta no existe (404).
     {
-      const r = await apiAsync("/api/calendar/board", { jar: jarA });
-      pendiente("staff A GET /api/calendar/board → 403", r.res.status === 403, "Slice 5", `status ${r.res.status}`);
+      const r = await apiAsync("/api/calendar/board?from=2027-06-02&days=1", { jar: jarA });
+      if (encendida) {
+        ok("staff A GET /api/calendar/board → 403", r.res.status === 403, `status ${r.res.status}`);
+      } else {
+        ok(
+          "staff A GET /api/calendar/board con la agenda apagada → 404 antes de auth",
+          r.res.status === 404,
+          `status ${r.res.status}`
+        );
+      }
     }
 
     console.log("  -- (4) mutaciones del plugin de organización → rechazadas");
@@ -2590,12 +3055,19 @@ async function aislamientoChecks() {
       });
       ok("staff sin perfil: escritura POST /api/bookings → 403", w.res.status === 403, `status ${w.res.status}`);
       const l = await apiAsync("/api/bookings", { jar: jarC });
-      pendiente(
-        "staff sin perfil: GET /api/bookings → 200 con lista vacía",
-        l.res.status === 200 && (l.json?.bookings ?? []).length === 0,
-        "US3",
-        `status ${l.res.status}`
-      );
+      if (encendida) {
+        ok(
+          "staff sin perfil: GET /api/bookings → 200 con lista vacía",
+          l.res.status === 200 && (l.json?.bookings ?? []).length === 0,
+          `status ${l.res.status}`
+        );
+      } else {
+        ok(
+          "staff sin perfil: GET /api/bookings con la agenda apagada → 404",
+          l.res.status === 404,
+          `status ${l.res.status}`
+        );
+      }
     }
     const meD = await apiAsync("/api/me", { jar: jarD });
     ok("perfil desactivado: /api/me → 403 account_disabled", meD.res.status === 403 && meD.json?.error?.code === "account_disabled", `${meD.res.status} ${JSON.stringify(meD.json)}`);
@@ -2604,21 +3076,38 @@ async function aislamientoChecks() {
     const sseD = await abrirEventos(jarD);
     ok("perfil desactivado: /api/events → 403 account_disabled", sseD.status === 403 && sseD.json?.error?.code === "account_disabled", `${sseD.status} ${JSON.stringify(sseD.json)}`);
 
-    // ---- (1) lectura cruzada (US3: en rojo hasta implementarla) ----
+    // ---- (1) lectura cruzada (US3) ----
     console.log("  -- (1) lectura cruzada entre profesionales (US3)");
     {
       const r = await apiAsync(`/api/bookings/${ISO.B.booking}`, { jar: jarA });
-      pendiente("staff A GET /api/bookings/{cita de B} → 404", r.res.status === 404, "US3", `status ${r.res.status}`);
-      const own = await apiAsync(`/api/bookings/${ISO.A.booking}`, { jar: jarA });
-      pendiente("staff A GET /api/bookings/{su cita} → 200", own.res.status === 200, "US3", `status ${own.res.status}`);
-      const list = await apiAsync("/api/bookings", { jar: jarA });
-      const ids = (list.json?.bookings ?? []).map((b) => b.id);
-      pendiente(
-        "staff A GET /api/bookings no contiene citas de B",
-        list.res.status === 200 && !ids.includes(ISO.B.booking) && ids.includes(ISO.A.booking),
-        "US3",
-        `status ${list.res.status}`
+      ok(
+        "staff A GET /api/bookings/{cita de B} → 404",
+        r.res.status === 404 && (r.json == null || r.json?.booking == null),
+        `status ${r.res.status}`
       );
+      const svcAjeno = await api(`/api/staff/${ISO.B.staff}/services`, { jar: jarA });
+      ok(
+        "staff A GET /api/staff/{B}/services → 404",
+        svcAjeno.res.status === 404,
+        `status ${svcAjeno.res.status}`
+      );
+      if (encendida) {
+        const own = await apiAsync(`/api/bookings/${ISO.A.booking}`, { jar: jarA });
+        ok("staff A GET /api/bookings/{su cita} → 200", own.res.status === 200, `status ${own.res.status}`);
+        const list = await apiAsync("/api/bookings", { jar: jarA });
+        const bookings = list.json?.bookings ?? [];
+        const ids = bookings.map((b) => b.id);
+        ok(
+          "staff A GET /api/bookings solo sus citas y bloqueos del local",
+          list.res.status === 200 &&
+            !ids.includes(ISO.B.booking) &&
+            ids.includes(ISO.A.booking) &&
+            bookings.every(
+              (b) => (b.kind === "block" && b.staff === null) || b.staff?.id === ISO.A.staff
+            ),
+          `status ${list.res.status} ids=${ids.join(",")}`
+        );
+      }
     }
 
     // ---- (9) bandera de la agenda ----
@@ -2632,7 +3121,8 @@ async function aislamientoChecks() {
     } else {
       ok("bandera encendida: /api/me informa agendaEnabled:true", meOwner.json?.agendaEnabled === true);
       await us1EquipoCatalogo({ ownerJar, jarA });
-      await us5FotoYHorario({ ownerJar, jarA });
+      await us5FotoYHorario({ ownerJar, jarA, sql, orgId, serviceId: svc.id });
+      await slice5ReservasYTablero({ ownerJar, jarA, sql, orgId, svc, createdStaffIds });
     }
   } finally {
     await limpiar().catch((e) => console.log(`  (limpieza falló: ${e})`));

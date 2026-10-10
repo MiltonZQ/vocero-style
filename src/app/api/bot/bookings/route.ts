@@ -2,6 +2,7 @@ import { z } from "zod";
 import { apiError, parseBody } from "@/lib/api";
 import { requireBotKey, resolveInstanceOrg } from "@/server/bot/auth";
 import { agendaDisabledResponse, agendaEnabled } from "@/server/agenda/flag";
+import { resolveAvailabilityTarget } from "@/server/agenda/default-staff";
 import {
   createSessionBooking,
   rescheduleForConversation,
@@ -41,6 +42,20 @@ export async function POST(req: Request) {
   const body = await parseBody(req, createSchema);
   if (!body.ok) return body.response;
 
+  const target = await resolveAvailabilityTarget(gate.organizationId);
+  if (!target.ok) {
+    return Response.json(
+      {
+        error: {
+          code: "service_required",
+          message: "Hay que elegir profesional y servicio",
+        },
+        services: target.services,
+      },
+      { status: 422 }
+    );
+  }
+
   try {
     const result = await createSessionBooking({
       organizationId: gate.organizationId,
@@ -50,6 +65,8 @@ export async function POST(req: Request) {
       source: "ai",
       // La regla innegociable: el agente solo reserva lo que ya ofreció.
       requireOffer: true,
+      staffId: target.staffId,
+      serviceId: target.serviceId,
     });
     return Response.json(bookingPayload(result), { status: 201 });
   } catch (err) {

@@ -352,7 +352,7 @@ servicios desde la API/UI; aparecen en el equipo, el catálogo y el listado de
 - [X] T041 [P] [US1] Crear `src/app/api/services/[id]/route.ts`: `PATCH` y
       `DELETE` solo owner; reception/staff → `403 forbidden` antes de parsear
       (R-403, FR-013); `DELETE` → **204** o `409 has_bookings`
-- [ ] T042 [US1] Ejecutar `aislamientoChecks()` y dejar en verde las
+- [X] T042 [US1] Ejecutar `aislamientoChecks()` y dejar en verde las
       verificaciones de US1 (T033); registrar RED→GREEN en el commit
 
 ### UI de ajustes (US1) — Slice 8
@@ -389,30 +389,30 @@ profesionales distintos → dos 201; dos `INSERT` directos a la BD → `23P01`.
 
 ### Tests primero (US2)
 
-- [ ] T046 [P] [US2] Crear `tests/unit/hours.test.ts`: `effectiveHours(staffHours,
+- [X] T046 [P] [US2] Crear `tests/unit/hours.test.ts`: `effectiveHours(staffHours,
       shopHours)` — `null` hereda el del local; el propio se **recorta** a la
       intersección con la apertura del local (nunca la excede); día sin franja
       válida se omite; franjas partidas; subir la apertura del local no obliga a
       reeditar (recorte al calcular, D13). Debe fallar
-- [ ] T047 [P] [US2] Crear `tests/unit/availability-multi.test.ts`: rejilla con
+- [X] T047 [P] [US2] Crear `tests/unit/availability-multi.test.ts`: rejilla con
       **duración variable** (corte 45 min, tinte 90 min no cabe a las 19:00 si
       cierra a las 20:00), solapamiento parcial bloquea (60 min a las 10:00
       excluye 10:15), adyacencia permitida, bloqueo personal y bloqueo del local
       excluyen, cancelada y `is_test` no ocupan, DST (America/New_York y
       Europe/Madrid, hora inexistente/ambigua) y respiro. Debe fallar
-- [ ] T048 [P] [US2] Crear `tests/unit/agenda-equivalence.test.ts` (SC-006):
+- [X] T048 [P] [US2] Crear `tests/unit/agenda-equivalence.test.ts` (SC-006):
       con 1 profesional y 1 servicio de la duración global, la disponibilidad
       nueva produce EXACTAMENTE los mismos huecos que la de la 015 para los
       fixtures de `tests/unit/availability.test.ts` (franja partida, aviso
       mínimo, ventana). Debe fallar hasta T052
-- [ ] T049 [P] [US2] Crear `tests/unit/booking-service-rules.test.ts`:
+- [X] T049 [P] [US2] Crear `tests/unit/booking-service-rules.test.ts`:
       `validateBookingTarget()` rechaza con `service_not_offered` si el
       profesional no ofrece el servicio o está inactivo, con `slot_taken` si
       cae fuera del horario efectivo o choca con bloqueo; la cita copia
       `durationMinutes` efectiva y `priceCents`/`currency` del catálogo
       (FR-015); cambiar después el precio del catálogo no altera la cita. Debe
       fallar
-- [ ] T050 [US2] Agregar a `aislamientoChecks()` en `scripts/e2e-selftest.mjs`
+- [X] T050 [US2] Agregar a `aislamientoChecks()` en `scripts/e2e-selftest.mjs`
       (RED) las verificaciones de no-solapamiento: (6) 100 pares de `POST
       /api/bookings` solapados para el mismo profesional con `Promise.all`, en
       100 horarios distintos → en cada par exactamente un **201** y un **409
@@ -427,62 +427,62 @@ profesionales distintos → dos 201; dos `INSERT` directos a la BD → `23P01`.
 
 ### Implementación (US2)
 
-- [ ] T051 [US2] Crear `src/server/agenda/hours.ts`: `effectiveHours(
+- [X] T051 [US2] Crear `src/server/agenda/hours.ts`: `effectiveHours(
       staffHours, shopHours)` pura (intersección y recorte), `normalizeWeeklyHours`
       reutilizando la validación de `src/server/agenda/settings.ts`
       (`isValidInterval`, `HH:mm`, `start < end`). Pone en verde
       `tests/unit/hours.test.ts` (la persistencia llega en T095)
-- [ ] T052 [US2] Editar `src/server/agenda/availability.ts`: `computeAvailability`
+- [X] T052 [US2] Editar `src/server/agenda/availability.ts`: `computeAvailability`
       y `findSlot` por `{ staffId, serviceId }` — horario efectivo
       (`effectiveHours`), duración efectiva (`effectiveDuration`), ocupados del
       profesional + respiro + bloqueos personales y del local en UNA consulta de
       ocupados y UNA de bloqueos, rejilla de candidatos que cabe antes del cierre;
       retira la resolución temporal de T018. Pone en verde
       `tests/unit/availability-multi.test.ts` y `tests/unit/agenda-equivalence.test.ts`
-- [ ] T053 [P] [US2] Crear `src/server/agenda/locks.ts`: advisory locks de
+- [X] T053 [P] [US2] Crear `src/server/agenda/locks.ts`: advisory locks de
       organización a nivel de transacción — `withSessionLock(tx, orgId)` (shared)
       y `withBlockLock(tx, orgId)` (exclusive), claves derivadas de forma
       estable de `organization_id` (research D4); documentar por qué el
       constraint no cubre los bloqueos del local (`staff_id NULL`)
-- [ ] T054 [US2] Editar `src/server/agenda/service.ts` `createSessionBooking`:
+- [X] T054 [US2] Editar `src/server/agenda/service.ts` `createSessionBooking`:
       exige `staffId` y `serviceId`; valida con `validateBookingTarget` (ofrece
       el servicio, activo, dentro del horario efectivo, sin bloqueo — FR-023);
       inserta `duration_minutes` efectiva + `price_cents` + `currency` copiados;
       toma el lock *shared*; `isSlotConflict` → `slot_taken` con alternativas
       frescas del mismo profesional/servicio. Pone en verde
       `tests/unit/booking-service-rules.test.ts`
-- [ ] T055 [US2] Editar `src/server/agenda/service.ts`: `createBlock` acepta
+- [X] T055 [US2] Editar `src/server/agenda/service.ts`: `createBlock` acepta
       `staffId` (bloqueo personal) o `null` (todo el local) con el lock
       *exclusive* para el del local; si hay sesiones dentro del rango devuelve
       `conflicts: [{ bookingId, staffId, label }]` sin cancelarlas (D4)
-- [ ] T056 [US2] Editar `src/server/agenda/service.ts`: `rescheduleBooking`
+- [X] T056 [US2] Editar `src/server/agenda/service.ts`: `rescheduleBooking`
       conserva el profesional; nuevo `reassignBooking({ bookingId, staffId,
       keepDuration })` que valida servicio ofrecido, activo, horario, bloqueos y
       toma el constraint (`23P01` → `slot_taken`); `markBookingStatus` al
       reactivar re-evalúa el constraint; `cancelBooking` sigue idempotente; los
       eventos `booking.updated` llevan `staffId` y `scope`
-- [ ] T057 [US2] Editar `src/app/api/bookings/route.ts`: `POST` con las dos
+- [X] T057 [US2] Editar `src/app/api/bookings/route.ts`: `POST` con las dos
       formas del contrato (`kind:"session"` con `staffId`, `serviceId`,
       `contactId` o `contact{name,phone}`, `startUtc`; `kind:"block"` con
       `staffId|null`, `durationMinutes`), **201** con el sobre de la 015 más
       duración efectiva; `422 service_not_offered`; `409 slot_taken` con `slots`
       frescos hermanos de `error`; el rol `staff` se ajusta en US3 (T067)
-- [ ] T058 [US2] Editar `src/app/api/bookings/[id]/route.ts`: `PATCH` con
+- [X] T058 [US2] Editar `src/app/api/bookings/[id]/route.ts`: `PATCH` con
       `action` `reschedule | reassign | cancel | status | retry_link`;
       `reassign` solo owner/reception (staff → 403); códigos exactos 200/409
-- [ ] T059 [US2] Editar `src/app/api/calendar/availability/route.ts`: parámetros
+- [X] T059 [US2] Editar `src/app/api/calendar/availability/route.ts`: parámetros
       `serviceId` y `staffId` (`any` se agrega en T108); compatibilidad 015 —
       sin `serviceId` y con exactamente 1 servicio y 1 profesional activos se
       usan; si no → `422 service_required` con `{ services }`; respuesta con
       `staffId`, `staffName`, `serviceId`, `durationMinutes`, `priceCents` por
       hueco
-- [ ] T060 [US2] Revisar los consumidores de `createSessionBooking`/`findSlot`
+- [X] T060 [US2] Revisar los consumidores de `createSessionBooking`/`findSlot`
       (`src/server/agenda/agent.ts`, `src/app/api/bot/bookings/route.ts`) para
       que sigan compilando y verdes con la firma nueva usando el único
       profesional/servicio (el reparto real llega en US6); corregir cualquier
       lectura directa de `booking` fuera de `src/server/agenda/` que marque
       `tests/unit/no-direct-booking-reads.test.ts`
-- [ ] T061 [US2] Correr `pnpm test:e2e`: verificaciones (6), (7), (8) de T050
+- [X] T061 [US2] Correr `pnpm test:e2e`: verificaciones (6), (7), (8) de T050
       en verde, y `agendaChecks()` de la 015 sin cambios. Registrar RED→GREEN
 
 **Checkpoint**: no existe forma de producir dos sesiones solapadas del mismo
@@ -503,7 +503,7 @@ equipo ni ajustes.
 
 ### Tests primero (US3)
 
-- [ ] T062 [P] [US3] Crear `tests/unit/booking-dto.test.ts`: `toBookingDTO(
+- [X] T062 [P] [US3] Crear `tests/unit/booking-dto.test.ts`: `toBookingDTO(
       booking, actor)` — para `staff` el `contact` es `{ name, phone }` **sin
       `id`**, sin `conversationId`, sin citas ajenas; el bloqueo del local se ve
       como `{ kind:"block", staff:null, notes }`; owner/reception ven todo. Debe
@@ -512,7 +512,7 @@ equipo ni ajustes.
       SSE por rol — owner/reception reciben todo; staff recibe solo
       `booking.updated` con `staffId` propio o `scope:"shop"`; staff sin perfil no
       recibe nada; el payload no contiene datos del cliente. Debe fallar
-- [ ] T064 [US3] Completar en `scripts/e2e-selftest.mjs` el gate de aislamiento
+- [X] T064 [US3] Completar en `scripts/e2e-selftest.mjs` el gate de aislamiento
       (RED): (1) lectura cruzada — `GET /api/bookings/{B}` como A → **404** sin
       datos, `GET /api/bookings` solo citas de A + bloqueos del local; (2)
       escritura cruzada — `PATCH` cancel/reschedule/status de la cita de B como
@@ -526,30 +526,30 @@ equipo ni ajustes.
 
 ### Implementación (US3)
 
-- [ ] T065 [US3] Editar `src/server/agenda/queries.ts`: `listBookings(actor,
+- [X] T065 [US3] Editar `src/server/agenda/queries.ts`: `listBookings(actor,
       { from, to, staffId, jobTitle, status })` construido SIEMPRE con
       `scoped(…, bookingScope(actor), …)`, rango por días en la zona del negocio
       convertido a UTC (DST-seguro), compatibilidad 015 (sin `from/to`: últimas
       200); `getBooking(actor, id)` → `null` fuera de alcance; `toBookingDTO`
       con la forma del contrato (`staff`, `service`, `priceCents`, `currency`,
       `endsAtUtc`, `legacyOverlap`). Pone en verde `tests/unit/booking-dto.test.ts`
-- [ ] T066 [US3] Editar `src/app/api/bookings/route.ts` y crear
+- [X] T066 [US3] Editar `src/app/api/bookings/route.ts` y crear
       `GET /api/bookings/[id]` en `src/app/api/bookings/[id]/route.ts`
       (`allowStaff: true`): `GET` lista por alcance, `GET [id]` 200 o **404**
       fuera de alcance; el `staffId` del request, si viene, debe coincidir con el
       propio o `403 forbidden`, si falta se fuerza el propio; staff sin perfil →
       listas vacías 200 y escrituras 403
-- [ ] T067 [US3] Editar `POST /api/bookings` (`src/app/api/bookings/route.ts`)
+- [X] T067 [US3] Editar `POST /api/bookings` (`src/app/api/bookings/route.ts`)
       para el actor `staff`: `staffId` forzado al propio (otro → `403`), solo
       servicios que ofrece, cliente por `contactId` de un contacto ya vinculado a
       sus citas o por `contact{name,phone}` (alta rápida con
       `src/server/inbox/identity.ts`, sin acceso a la ficha); bloqueos
       personales sí, bloqueo del local → `403`
-- [ ] T068 [US3] Editar `PATCH /api/bookings/[id]` (`src/app/api/bookings/[id]/route.ts`):
+- [X] T068 [US3] Editar `PATCH /api/bookings/[id]` (`src/app/api/bookings/[id]/route.ts`):
       usar `assertCanWriteBooking`; ajena o inexistente → `404 not_found` sin
       cuerpo; staff puede `reschedule`, `cancel`, `status`, `retry_link` sobre lo
       propio; `reassign` → 403
-- [ ] T069 [US3] Editar `PATCH /api/staff/[id]` en
+- [X] T069 [US3] Editar `PATCH /api/staff/[id]` en
       `src/app/api/staff/[id]/route.ts`: staff sobre sí mismo solo
       `{ bio, phone, color }` (cualquier otro campo — `displayName`, `jobTitle`,
       `active`, `position` — **403 forbidden**, no 422); sobre otro perfil 404
@@ -563,7 +563,7 @@ equipo ni ajustes.
       `tests/unit/events-filter.test.ts`
 - [X] T071 [P] [US3] Editar `src/components/use-events.ts`: refetch por
       `booking.updated` sin asumir eventos de bandeja (que el staff nunca recibe)
-- [ ] T072 [US3] Verificar que `GET /api/staff/[id]/photo` y `GET
+- [X] T072 [US3] Verificar que `GET /api/staff/[id]/photo` y `GET
       /api/staff/[id]/services` respeten el alcance del staff (404 en otro
       perfil) cuando existan (T094, T091) — dejar la aserción en
       `aislamientoChecks()` (foto ajena → 404)
@@ -579,7 +579,7 @@ equipo ni ajustes.
       pasar rol/`agendaEnabled` (vía `requireActor`) al nav con
       `src/lib/agenda-roles-ui.ts`; el staff queda con «Mi agenda»/«Mi perfil»;
       redirect post-login del staff a `/my-agenda` (SC-004, un solo paso)
-- [ ] T075 [US3] Correr `pnpm test:e2e`: todas las verificaciones de
+- [X] T075 [US3] Correr `pnpm test:e2e`: todas las verificaciones de
       aislamiento (1), (2), (4), (5), SSE en verde; `GET /api/events` del staff
       sin eventos ajenos ni de bandeja. Registrar RED→GREEN
 
@@ -601,12 +601,12 @@ agente aparece sin recargar.
 
 ### Tests primero (US4)
 
-- [ ] T076 [P] [US4] Crear `tests/unit/calendar-board.test.ts`: `buildBoard()`
+- [X] T076 [P] [US4] Crear `tests/unit/calendar-board.test.ts`: `buildBoard()`
       arma columnas solo de profesionales activos (más los inactivos con citas
       futuras en `needsReassignment`), `hours` efectivo por día, `shopBlocks`
       aparte, filtros por `staffId`/`jobTitle`, rango `days=1|7` en la zona del
       negocio incluyendo el cambio de horario de verano. Debe fallar
-- [ ] T077 [US4] Agregar a `aislamientoChecks()` (RED) las verificaciones de US4:
+- [X] T077 [US4] Agregar a `aislamientoChecks()` (RED) las verificaciones de US4:
       reception agenda 3 citas a las 10:00 con 3 profesionales → tres **201** y
       el tablero las devuelve en tres columnas; la misma hora con el mismo
       profesional → **409**; reception `GET /api/calendar/board` → **200**, staff
@@ -616,15 +616,15 @@ agente aparece sin recargar.
 
 ### Implementación (US4)
 
-- [ ] T078 [US4] Editar `src/server/agenda/queries.ts`: `buildBoard(actor,
+- [X] T078 [US4] Editar `src/server/agenda/queries.ts`: `buildBoard(actor,
       { from, days, staffId, jobTitle })` con UNA consulta por rango
       (`booking_org_staff_when_idx`) y aritmética en memoria; columnas,
       `hours` efectivo por día, `bookings`, `needsReassignment`, `shopBlocks`.
       Pone en verde `tests/unit/calendar-board.test.ts`
-- [ ] T079 [US4] Crear `src/app/api/calendar/board/route.ts` (`GET`, roles
+- [X] T079 [US4] Crear `src/app/api/calendar/board/route.ts` (`GET`, roles
       `["owner","reception"]`; staff → 403 FR-007; parámetros `from`, `days`
       `1|7`, `staffId`, `jobTitle`; forma del contrato)
-- [ ] T080 [US4] Editar `src/app/api/calendar/settings/route.ts`: `PUT` solo
+- [X] T080 [US4] Editar `src/app/api/calendar/settings/route.ts`: `PUT` solo
       owner (reception → 403 con la defensa de R-403), `GET` owner/reception;
       staff → 403 en ambos
 - [ ] T081 [P] [US4] Crear `src/components/calendar/staff-filter.tsx`: filtros

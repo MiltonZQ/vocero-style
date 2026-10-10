@@ -12,8 +12,15 @@ import {
   zonedWallClockToUtc,
   type SlotUtc,
 } from "@/lib/time/slots";
-import { getSettings, type CalendarSettings } from "@/server/agenda/settings";
-import { resolveSoleStaffId } from "@/server/agenda/default-staff";
+import { buildServiceSlots, type GridBusy } from "@/server/agenda/grid";
+import { effectiveHours } from "@/server/agenda/hours";
+import { AgendaHttpError } from "@/server/agenda/http";
+import {
+  getSettings,
+  normalizeWeeklyHours,
+  type CalendarSettings,
+  type WeeklyHours,
+} from "@/server/agenda/settings";
 
 /**
  * 015 — Motor de disponibilidad:
@@ -78,47 +85,53 @@ export function filterFreeSlots(
 
 export async function computeAvailability(
   organizationId: string,
-  opts?: {
+  opts: {
+    staffId: string;
+    serviceId: string;
     fromISO?: string;
     toISO?: string;
     excludeBookingId?: string;
     now?: Date;
     settings?: CalendarSettings;
-    /**
-     * 018 — solo cuenta lo ocupado de ESTE profesional (y los bloqueos de todo
-     * el local). TEMPORAL (018 US2): sin él se usa el único profesional activo;
-     * con varios se conserva el comportamiento 015 (todo cuenta como ocupado).
-     */
-    staffId?: string;
+    /** Keeps a booking's own duration when rescheduling. */
+    durationMinutes?: number;
   }
 ): Promise<AvailableSlot[]> {
-  const settings = opts?.settings ?? (await getSettings(organizationId));
-  const now = opts?.now ?? new Date();
+  const settings = opts.settings ?? (await getSettings(organizationId));
+  const now = opts.now ?? new Date();
   const tz = settings.timezone;
+  const target = await loadServiceTarget(organizationId, opts.staffId, opts.serviceId);
+  const durationMinutes = opts.durationMinutes ?? target.durationMinutes;
+  const hours = effectiveHours(target.weeklyHours, settings.weeklyHours).weeklyHours;
 
-  const from = opts?.fromISO ?? todayInTz(now, tz);
-  const to = opts?.toISO ?? addDaysISO(from, settings.maxDaysAhead);
-
-  const candidates = buildCandidateSlots(settings, from, to);
-  if (candidates.length === 0) return [];
-
-  // TEMPORAL (018 US2): se reemplaza por selección explícita de profesional
-  const staffId = opts?.staffId ?? (await resolveSoleStaffId(organizationId));
+  const from = opts.fromISO ?? todayInTz(now, tz);
+  const to = opts.toISO ?? addDaysISO(from, settings.maxDaysAhead);
+  const dates = eachDateInRange(from, to);
+  if (dates.length === 0 || durationMinutes <= 0) return [];
 
   const busy = await getBusyIntervals(organizationId, {
-    staffId,
+    staffId: opts.staffId,
     fromUtc: zonedWallClockToUtc(from, "00:00", tz) ?? new Date(0),
     toUtc:
       zonedWallClockToUtc(addDaysISO(to, 1), "00:00", tz) ??
       new Date(now.getTime() + 86_400_000 * 61),
-    excludeBookingId: opts?.excludeBookingId,
+    excludeBookingId: opts.excludeBookingId,
   });
 
-  return filterFreeSlots(candidates, busy, {
+  return buildServiceSlots({
+    timeZone: tz,
+    fromDate: from,
+    days: dates.length,
+    weeklyHours: hours,
+    durationMinutes,
+    stepMinutes: settings.slotMinutes,
+    bufferMinutes: settings.bufferMinutes,
+    minNoticeMinutes: settings.minNoticeHours * 60,
+    windowDays: 400,
     now,
-    minNoticeHours: settings.minNoticeHours,
-    timezone: tz,
-  });
+    staffId: opts.staffId,
+    busy,
+  }).map((slot) => ({ ...slot, label: labelInTz(slot.startUtc, tz) }));
 }
 
 /**
@@ -136,29 +149,88 @@ export async function computeAvailability(
 export async function findSlot(
   organizationId: string,
   whenISO: string,
-  opts?: {
+  opts: {
+    staffId: string;
+    serviceId: string;
     excludeBookingId?: string;
     now?: Date;
     settings?: CalendarSettings;
-    /** 018 — ver `computeAvailability`. */
-    staffId?: string;
+    durationMinutes?: number;
   }
 ): Promise<AvailableSlot | null> {
   const target = Date.parse(whenISO);
   if (Number.isNaN(target)) return null;
 
-  const settings = opts?.settings ?? (await getSettings(organizationId));
+  const settings = opts.settings ?? (await getSettings(organizationId));
   const dayInTz = todayInTz(new Date(target), settings.timezone);
 
   const slots = await computeAvailability(organizationId, {
     fromISO: addDaysISO(dayInTz, -1),
     toISO: addDaysISO(dayInTz, 1),
-    excludeBookingId: opts?.excludeBookingId,
-    now: opts?.now,
+    excludeBookingId: opts.excludeBookingId,
+    now: opts.now,
     settings,
-    staffId: opts?.staffId,
+    staffId: opts.staffId,
+    serviceId: opts.serviceId,
+    durationMinutes: opts.durationMinutes,
   });
   return slots.find((s) => Date.parse(s.startUtc) === target) ?? null;
+}
+
+function storedStaffHours(value: unknown): WeeklyHours | null {
+  if (value == null) return null;
+  const hours = normalizeWeeklyHours(value);
+  return Object.keys(hours).length > 0 ? hours : null;
+}
+
+async function loadServiceTarget(
+  organizationId: string,
+  staffId: string,
+  serviceId: string
+): Promise<{ durationMinutes: number; weeklyHours: WeeklyHours | null }> {
+  const db = getDb();
+  const staffRows = await db
+    .select({ active: schema.staff.active, weeklyHours: schema.staff.weeklyHours })
+    .from(schema.staff)
+    .where(scoped(schema.staff.organizationId, organizationId, eq(schema.staff.id, staffId)))
+    .limit(1);
+  const serviceRows = await db
+    .select({
+      active: schema.service.active,
+      durationMinutes: schema.service.durationMinutes,
+    })
+    .from(schema.service)
+    .where(
+      scoped(schema.service.organizationId, organizationId, eq(schema.service.id, serviceId))
+    )
+    .limit(1);
+  const linkRows = await db
+    .select({ durationMinutes: schema.staffService.durationMinutes })
+    .from(schema.staffService)
+    .where(
+      scoped(
+        schema.staffService.organizationId,
+        organizationId,
+        and(
+          eq(schema.staffService.staffId, staffId),
+          eq(schema.staffService.serviceId, serviceId)
+        )
+      )
+    )
+    .limit(1);
+  const staff = staffRows[0];
+  const service = serviceRows[0];
+  const link = linkRows[0];
+  if (!staff?.active || !service?.active || !link) {
+    throw new AgendaHttpError(
+      "service_not_offered",
+      "Ese servicio no está disponible para este profesional."
+    );
+  }
+  return {
+    durationMinutes: link.durationMinutes ?? service.durationMinutes,
+    weeklyHours: storedStaffHours(staff.weeklyHours),
+  };
 }
 
 async function getBusyIntervals(
@@ -167,13 +239,15 @@ async function getBusyIntervals(
     fromUtc: Date;
     toUtc: Date;
     excludeBookingId?: string;
-    staffId?: string | null;
+    staffId: string;
   }
-): Promise<SlotUtc[]> {
+): Promise<GridBusy[]> {
   const db = getDb();
   const rows = await db
     .select({
       id: schema.booking.id,
+      kind: schema.booking.kind,
+      staffId: schema.booking.staffId,
       scheduledAt: schema.booking.scheduledAt,
       durationMinutes: schema.booking.durationMinutes,
     })
@@ -187,16 +261,12 @@ async function getBusyIntervals(
           inArray(schema.booking.status, ["agendada", "realizada"]),
           // Sandbox: una cita de prueba no consume la agenda real.
           eq(schema.booking.isTest, false),
-          // 018: lo del profesional + los bloqueos de todo el local.
-          input.staffId
-            ? or(
-                eq(schema.booking.staffId, input.staffId),
-                and(
-                  eq(schema.booking.kind, "block"),
-                  isNull(schema.booking.staffId)
-                )
-              )
-            : undefined,
+          // Una fila legada solapada no ocupa hasta que se mueva.
+          eq(schema.booking.legacyOverlap, false),
+          or(
+            eq(schema.booking.staffId, input.staffId),
+            and(eq(schema.booking.kind, "block"), isNull(schema.booking.staffId))
+          ),
           gte(schema.booking.scheduledAt, input.fromUtc),
           lte(schema.booking.scheduledAt, input.toUtc)
         )
@@ -206,9 +276,10 @@ async function getBusyIntervals(
   return rows
     .filter((r) => r.id !== input.excludeBookingId)
     .map((r) => ({
+      staffId: r.staffId,
+      kind: r.kind === "block" ? "block" : "session",
+      status: "agendada",
       startUtc: r.scheduledAt.toISOString(),
-      endUtc: new Date(
-        r.scheduledAt.getTime() + r.durationMinutes * 60_000
-      ).toISOString(),
+      endUtc: new Date(r.scheduledAt.getTime() + r.durationMinutes * 60_000).toISOString(),
     }));
 }

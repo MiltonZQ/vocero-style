@@ -1,7 +1,9 @@
 import { computeAvailability } from "@/server/agenda/availability";
+import { resolveAvailabilityTarget } from "@/server/agenda/default-staff";
 import { getSettings } from "@/server/agenda/settings";
 import { spreadByDay } from "@/server/agenda/spread";
 import { replaceOffers } from "@/server/agenda/offers";
+import { AgendaHttpError } from "@/server/agenda/http";
 import { BookingError, createSessionBooking } from "@/server/agenda/service";
 
 /**
@@ -35,10 +37,34 @@ export async function offerSlots(input: {
 }): Promise<AgendaTurn> {
   const settings = await getSettings(input.organizationId);
   const now = new Date();
-  const all = await computeAvailability(input.organizationId, {
-    settings,
-    now,
-  });
+  const target = await resolveAvailabilityTarget(input.organizationId);
+  if (!target.ok) {
+    return {
+      ok: false,
+      text:
+        input.intro?.trim() ||
+        "Por ahora no me quedan horarios libres. Déjame confirmarlo con el equipo y te aviso.",
+    };
+  }
+  let all;
+  try {
+    all = await computeAvailability(input.organizationId, {
+      settings,
+      now,
+      staffId: target.staffId,
+      serviceId: target.serviceId,
+    });
+  } catch (err) {
+    if (err instanceof AgendaHttpError) {
+      return {
+        ok: false,
+        text:
+          input.intro?.trim() ||
+          "Por ahora no me quedan horarios libres. Déjame confirmarlo con el equipo y te aviso.",
+      };
+    }
+    throw err;
+  }
   const spread = spreadByDay(all, {
     timezone: settings.timezone,
     limit: OFFERED,
@@ -77,12 +103,21 @@ export async function bookSlot(input: {
   confirmation?: string;
 }): Promise<AgendaTurn> {
   try {
+    const target = await resolveAvailabilityTarget(input.organizationId);
+    if (!target.ok) {
+      return {
+        ok: false,
+        text: "No pude agendarlo en este momento. Lo reviso con el equipo y te confirmo.",
+      };
+    }
     const result = await createSessionBooking({
       organizationId: input.organizationId,
       conversationId: input.conversationId,
       startUtc: input.startUtc,
       source: "ai",
       requireOffer: true,
+      staffId: target.staffId,
+      serviceId: target.serviceId,
     });
 
     const base =
@@ -99,6 +134,12 @@ export async function bookSlot(input: {
     }
     return { ok: true, text: base };
   } catch (err) {
+    if (err instanceof AgendaHttpError) {
+      return {
+        ok: false,
+        text: "No pude agendarlo en este momento. Lo reviso con el equipo y te confirmo.",
+      };
+    }
     if (!(err instanceof BookingError)) throw err;
 
     // Se ocupó o el modelo inventó la hora: en ambos casos se re-ofrece con

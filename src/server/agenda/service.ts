@@ -1,4 +1,4 @@
-import { and, asc, eq, gte, inArray } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, lt, or } from "drizzle-orm";
 import { getDb, schema } from "@/lib/db";
 import { newId } from "@/lib/db/ids";
 import { scoped } from "@/lib/db/tenant";
@@ -22,10 +22,14 @@ import {
   markConnectorAuthError,
 } from "@/server/agenda/connectors";
 import { ConnectorError } from "@/server/agenda/connectors/types";
-import { resolveDefaultCatalog } from "@/server/agenda/default-staff";
+import { validateBookingTarget } from "@/server/agenda/booking-target";
+import { withBlockLock, withSessionLock } from "@/server/agenda/locks";
 import { moveLeadToStage } from "@/server/leads/stage-history";
 import { bookingUpdatedData } from "@/server/events/booking-event";
 import { publish } from "@/server/events/bus";
+import { BookingError, type BookingErrorCode } from "@/server/agenda/booking-error";
+
+export { BookingError, type BookingErrorCode };
 
 /**
  * 015 — Ciclo de vida de la cita y las dos reglas INNEGOCIABLES:
@@ -42,34 +46,6 @@ import { publish } from "@/server/events/bus";
  * caído, la cita se crea igual con el enlace pendiente — un tercero no puede
  * costarnos la conversión, ni hacernos prometer un enlace que no existe.
  */
-
-export type BookingErrorCode =
-  | "slot_taken"
-  | "slot_not_offered"
-  | "not_found"
-  | "invalid"
-  | "service_required";
-
-export class BookingError extends Error {
-  code: BookingErrorCode;
-  /**
-   * Horarios para re-ofrecer. En `slot_taken` son alternativas frescas YA
-   * registradas como la nueva oferta de la conversación; en `slot_not_offered`
-   * es lo que sí se había ofrecido.
-   */
-  slots: OfferedSlot[];
-
-  constructor(
-    code: BookingErrorCode,
-    message: string,
-    slots: OfferedSlot[] = []
-  ) {
-    super(message);
-    this.name = "BookingError";
-    this.code = code;
-    this.slots = slots;
-  }
-}
 
 type BookingRow = typeof schema.booking.$inferSelect;
 
@@ -99,24 +75,28 @@ export async function createSessionBooking(input: {
    */
   requireOffer: boolean;
   now?: Date;
+  staffId: string;
+  serviceId: string;
 }): Promise<BookingResult> {
   const db = getDb();
   const settings = await getSettings(input.organizationId);
 
+  if (!input.staffId || !input.serviceId) {
+    throw new BookingError("service_required", "Hay que elegir profesional y servicio");
+  }
   if (Number.isNaN(Date.parse(input.startUtc))) {
     throw new BookingError("invalid", "Instante inválido");
   }
 
-  // TEMPORAL (018 US2): se reemplaza por selección explícita. La BD exige
-  // profesional y servicio en toda sesión; mientras las superficies de la 015
-  // no los mandan, se usa el único activo de cada uno.
-  const pick = await resolveDefaultCatalog(input.organizationId);
-  if (!pick) {
-    throw new BookingError(
-      "service_required",
-      "Hay que elegir profesional y servicio"
-    );
-  }
+  const startUtc = new Date(input.startUtc);
+  const snapshot = await assertBookingTarget(db, {
+    organizationId: input.organizationId,
+    staffId: input.staffId,
+    serviceId: input.serviceId,
+    startUtc,
+    timeZone: settings.timezone,
+    shopHours: settings.weeklyHours,
+  });
 
   // Contexto de la conversación: contacto y si es del Laboratorio.
   let isTest = false;
@@ -170,7 +150,9 @@ export async function createSessionBooking(input: {
   const slot = await findSlot(input.organizationId, input.startUtc, {
     now: input.now,
     settings,
-    staffId: pick.staffId,
+    staffId: input.staffId,
+    serviceId: input.serviceId,
+    durationMinutes: snapshot.durationMinutes,
   });
   if (!slot) {
     throw new BookingError(
@@ -178,6 +160,9 @@ export async function createSessionBooking(input: {
       "Ese horario ya no está disponible",
       await refreshOffer(input.organizationId, input.conversationId, {
         now: input.now,
+        staffId: input.staffId,
+        serviceId: input.serviceId,
+        durationMinutes: snapshot.durationMinutes,
       })
     );
   }
@@ -194,43 +179,64 @@ export async function createSessionBooking(input: {
     )
     .limit(1);
 
+  const endUtc = new Date(startUtc.getTime() + snapshot.durationMinutes * 60_000);
   let booking: BookingRow;
   try {
-    const inserted = await db
-      .insert(schema.booking)
-      .values({
-        id: newId("booking"),
-        organizationId: input.organizationId,
-        kind: "session",
-        source: input.source === "ai" ? "ai" : "manual",
-        contactId,
-        conversationId: input.conversationId ?? null,
-        leadId: leadRows[0]?.id ?? null,
-        scheduledAt: new Date(slot.startUtc),
-        // Copias históricas del catálogo (FR-015).
-        staffId: pick.staffId,
-        serviceId: pick.serviceId,
-        durationMinutes: pick.durationMinutes,
-        priceCents: pick.priceCents,
-        currency: pick.currency,
-        // Copia histórica: si el negocio cambia de conector, esta cita conserva
-        // el que le tocó y sigue hablando con él al moverse o cancelarse.
-        connector: settings.connector,
-        isTest,
-        notes: input.notes ?? null,
-      })
-      .returning();
-    booking = inserted[0]!;
+    booking = await withDeadlockRetry(() => db.transaction(async (tx) => {
+      // Shared: a shop block's exclusive lock waits, and we wait for it.
+      await withSessionLock(tx, input.organizationId);
+      const blocked = await blocksOverlapping(tx, input.organizationId, {
+        staffId: input.staffId,
+        start: startUtc,
+        end: endUtc,
+      });
+      if (blocked.length > 0) {
+        throw new BookingError("slot_taken", "Ese horario ya no está disponible");
+      }
+      const inserted = await tx
+        .insert(schema.booking)
+        .values({
+          id: newId("booking"),
+          organizationId: input.organizationId,
+          kind: "session",
+          source: input.source === "ai" ? "ai" : "manual",
+          contactId,
+          conversationId: input.conversationId ?? null,
+          leadId: leadRows[0]?.id ?? null,
+          scheduledAt: new Date(slot.startUtc),
+          // Copias históricas del catálogo (FR-015). El precio no sigue al catálogo.
+          staffId: input.staffId,
+          serviceId: input.serviceId,
+          durationMinutes: snapshot.durationMinutes,
+          priceCents: snapshot.priceCents,
+          currency: snapshot.currency,
+          connector: settings.connector,
+          isTest,
+          notes: input.notes ?? null,
+        })
+        .returning();
+      return inserted[0]!;
+    }));
   } catch (err) {
-    // REGLA 2 (segunda mitad): la llave única cierra la carrera exacta. Dos
-    // confirmaciones simultáneas del mismo instante — la perdedora sale por
-    // aquí, sin cita creada.
-    if (isSlotConflict(err)) {
+    if (err instanceof BookingError) {
+      err.slots = await refreshOffer(input.organizationId, input.conversationId, {
+        now: input.now,
+        staffId: input.staffId,
+        serviceId: input.serviceId,
+        durationMinutes: snapshot.durationMinutes,
+      });
+      throw err;
+    }
+    // 23505 (015) and 23P01 (EXCLUDE por profesional) are the same answer.
+    if (isSlotConflict(err) || isDeadlock(err)) {
       throw new BookingError(
         "slot_taken",
         "Ese horario acaba de ocuparse",
         await refreshOffer(input.organizationId, input.conversationId, {
           now: input.now,
+          staffId: input.staffId,
+          serviceId: input.serviceId,
+          durationMinutes: snapshot.durationMinutes,
         })
       );
     }
@@ -269,40 +275,76 @@ export async function createSessionBooking(input: {
   };
 }
 
+export type BlockConflict = {
+  bookingId: string;
+  staffId: string | null;
+  label: string;
+};
+
+/**
+ * Personal block (`staffId` string) or whole-shop block (`null`).
+ * Sessions inside the range are listed and left untouched — never cancelled.
+ * A shop block holds the exclusive advisory lock; the EXCLUDE cannot see it
+ * because `staff_id` is NULL.
+ */
 export async function createBlock(input: {
   organizationId: string;
   startUtc: string;
   durationMinutes: number;
   notes?: string | null;
-}): Promise<BookingRow> {
-  if (Number.isNaN(Date.parse(input.startUtc))) {
+  staffId: string | null;
+}): Promise<{ block: BookingRow | null; conflicts: BlockConflict[] }> {
+  const start = new Date(input.startUtc);
+  if (Number.isNaN(start.getTime())) {
     throw new BookingError("invalid", "Instante inválido");
   }
+  const end = new Date(start.getTime() + input.durationMinutes * 60_000);
   const db = getDb();
-  try {
-    const inserted = await db
+  const settings = await getSettings(input.organizationId);
+
+  const place = async (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => {
+    if (input.staffId === null) await withBlockLock(tx, input.organizationId);
+    const conflicts = await sessionConflicts(tx, input.organizationId, {
+      staffId: input.staffId,
+      start,
+      end,
+      timeZone: settings.timezone,
+    });
+    if (conflicts.length > 0) return { block: null, conflicts };
+    const inserted = await tx
       .insert(schema.booking)
       .values({
         id: newId("booking"),
         organizationId: input.organizationId,
         kind: "block",
         source: "manual",
-        scheduledAt: new Date(input.startUtc),
+        staffId: input.staffId,
+        scheduledAt: start,
         durationMinutes: input.durationMinutes,
         notes: input.notes ?? null,
       })
       .returning();
-    const block = inserted[0]!;
-    publish(input.organizationId, {
-      type: "booking.updated",
-      data: bookingUpdatedData(block),
-    });
-    return block;
-  } catch (err) {
-    if (isSlotConflict(err)) {
-      throw new BookingError("slot_taken", "Ese horario ya está ocupado");
+    return { block: inserted[0]!, conflicts: [] as BlockConflict[] };
+  };
+
+  try {
+    const result = await withDeadlockRetry(() => db.transaction(place));
+    if (result.block) {
+      publish(input.organizationId, {
+        type: "booking.updated",
+        data: bookingUpdatedData(result.block),
+      });
     }
-    throw err;
+    return result;
+  } catch (err) {
+    if (!isSlotConflict(err) && !isDeadlock(err)) throw err;
+    const conflicts = await sessionConflicts(db, input.organizationId, {
+      staffId: input.staffId,
+      start,
+      end,
+      timeZone: settings.timezone,
+    });
+    return { block: null, conflicts };
   }
 }
 
@@ -319,12 +361,17 @@ export async function rescheduleBooking(input: {
   }
 
   const settings = await getSettings(input.organizationId);
-  // excludeBookingId: la propia cita no debe bloquearse a sí misma.
+  if (!booking.staffId || !booking.serviceId) {
+    throw new BookingError("invalid", "Esta cita no se puede mover");
+  }
+  // Mismo profesional. La duración histórica no cambia con el catálogo.
   const slot = await findSlot(input.organizationId, input.startUtc, {
     excludeBookingId: booking.id,
     now: input.now,
     settings,
-    staffId: booking.staffId ?? undefined,
+    staffId: booking.staffId,
+    serviceId: booking.serviceId,
+    durationMinutes: booking.durationMinutes,
   });
   if (!slot) {
     throw new BookingError("slot_taken", "Ese horario ya no está disponible");
@@ -332,20 +379,31 @@ export async function rescheduleBooking(input: {
 
   let next: BookingRow;
   try {
-    const updated = await db
-      .update(schema.booking)
-      .set({
-        scheduledAt: new Date(slot.startUtc),
-        // Mover normaliza una cita legada solapada: desde ahora la cubre el EXCLUDE.
-        legacyOverlap: false,
-        updatedAt: new Date(),
-      })
-      .where(eq(schema.booking.id, booking.id))
-      .returning();
-    next = updated[0]!;
+    next = await withDeadlockRetry(async () => {
+      const updated = await db
+        .update(schema.booking)
+        .set({
+          scheduledAt: new Date(slot.startUtc),
+          // Mover normaliza una cita legada solapada: desde ahora la cubre el EXCLUDE.
+          legacyOverlap: false,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.booking.id, booking.id))
+        .returning();
+      return updated[0]!;
+    });
   } catch (err) {
-    if (isSlotConflict(err)) {
-      throw new BookingError("slot_taken", "Ese horario acaba de ocuparse");
+    if (isSlotConflict(err) || isDeadlock(err)) {
+      throw new BookingError(
+        "slot_taken",
+        "Ese horario acaba de ocuparse",
+        await refreshOffer(input.organizationId, booking.conversationId, {
+          now: input.now,
+          staffId: booking.staffId!,
+          serviceId: booking.serviceId!,
+          durationMinutes: booking.durationMinutes,
+        })
+      );
     }
     throw err;
   }
@@ -444,6 +502,78 @@ export async function rescheduleForConversation(input: {
   return result;
 }
 
+/**
+ * Moves a session to another professional. Price stays the historical copy.
+ * `keepDuration` keeps the booking length; otherwise the new professional's
+ * effective duration is used. 23P01 comes back as `slot_taken`.
+ */
+export async function reassignBooking(input: {
+  organizationId: string;
+  bookingId: string;
+  staffId: string;
+  keepDuration?: boolean;
+}): Promise<BookingResult> {
+  const db = getDb();
+  const booking = await getOwnBooking(input.organizationId, input.bookingId);
+  if (booking.kind !== "session" || booking.status === "cancelada" || !booking.serviceId) {
+    throw new BookingError("invalid", "Esta cita no se puede reasignar");
+  }
+  const settings = await getSettings(input.organizationId);
+  const snapshot = await assertBookingTarget(db, {
+    organizationId: input.organizationId,
+    staffId: input.staffId,
+    serviceId: booking.serviceId,
+    startUtc: booking.scheduledAt,
+    timeZone: settings.timezone,
+    shopHours: settings.weeklyHours,
+    durationMinutes: input.keepDuration ? booking.durationMinutes : undefined,
+  });
+  const durationMinutes = input.keepDuration ? booking.durationMinutes : snapshot.durationMinutes;
+
+  let next: BookingRow;
+  try {
+    next = await withDeadlockRetry(() => db.transaction(async (tx) => {
+      await withSessionLock(tx, input.organizationId);
+      const updated = await tx
+        .update(schema.booking)
+        .set({
+          staffId: input.staffId,
+          durationMinutes,
+          legacyOverlap: false,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.booking.id, booking.id))
+        .returning();
+      return updated[0]!;
+    }));
+  } catch (err) {
+    if (isSlotConflict(err) || isDeadlock(err)) {
+      throw new BookingError(
+        "slot_taken",
+        "Ese horario ya está ocupado",
+        await refreshOffer(input.organizationId, booking.conversationId, {
+          now: new Date(),
+          staffId: input.staffId,
+          serviceId: booking.serviceId,
+          durationMinutes,
+        })
+      );
+    }
+    throw err;
+  }
+
+  publish(input.organizationId, {
+    type: "booking.updated",
+    data: bookingUpdatedData(next),
+  });
+  return {
+    booking: next,
+    meetingLink: next.meetingLink,
+    linkPending: next.linkPending,
+    label: labelInTz(next.scheduledAt.toISOString(), settings.timezone),
+  };
+}
+
 /** Idempotente: cancelar una cita ya cancelada no falla ni cambia nada. */
 export async function cancelBooking(input: {
   organizationId: string;
@@ -477,13 +607,15 @@ export async function markBookingStatus(input: {
   const db = getDb();
   const booking = await getOwnBooking(input.organizationId, input.bookingId);
   try {
-    await db
-      .update(schema.booking)
-      .set({ status: input.status, updatedAt: new Date() })
-      .where(eq(schema.booking.id, booking.id));
+    await withDeadlockRetry(() =>
+      db
+        .update(schema.booking)
+        .set({ status: input.status, updatedAt: new Date() })
+        .where(eq(schema.booking.id, booking.id))
+    );
   } catch (err) {
     // Reactivar a `realizada` un instante que otra cita ya ocupa.
-    if (isSlotConflict(err)) {
+    if (isSlotConflict(err) || isDeadlock(err)) {
       throw new BookingError("slot_taken", "Ese horario ya está ocupado");
     }
     throw err;
@@ -648,14 +780,18 @@ async function withConnector(
 async function refreshOffer(
   organizationId: string,
   conversationId: string | null | undefined,
-  opts: { now?: Date }
+  opts: { now?: Date; staffId: string; serviceId: string; durationMinutes?: number }
 ): Promise<OfferedSlot[]> {
   let fresh: AvailableSlot[] = [];
   try {
-    fresh = (await computeAvailability(organizationId, { now: opts.now })).slice(
-      0,
-      FRESH_ALTERNATIVES
-    );
+    fresh = (
+      await computeAvailability(organizationId, {
+        now: opts.now,
+        staffId: opts.staffId,
+        serviceId: opts.serviceId,
+        durationMinutes: opts.durationMinutes,
+      })
+    ).slice(0, FRESH_ALTERNATIVES);
   } catch (err) {
     console.warn(`[agenda] no pude calcular alternativas: ${err}`);
     return [];
@@ -793,20 +929,216 @@ export async function hasActiveBooking(
   return rows.length > 0;
 }
 
+type QueryDb = Pick<ReturnType<typeof getDb>, "select">;
+
+async function assertBookingTarget(
+  db: QueryDb,
+  input: {
+    organizationId: string;
+    staffId: string;
+    serviceId: string;
+    startUtc: Date;
+    timeZone: string;
+    shopHours: CalendarSettings["weeklyHours"];
+    durationMinutes?: number;
+  }
+) {
+  const staffRows = await db
+    .select({
+      id: schema.staff.id,
+      active: schema.staff.active,
+      weeklyHours: schema.staff.weeklyHours,
+    })
+    .from(schema.staff)
+    .where(
+      scoped(schema.staff.organizationId, input.organizationId, eq(schema.staff.id, input.staffId))
+    )
+    .limit(1);
+  const serviceRows = await db
+    .select({
+      id: schema.service.id,
+      active: schema.service.active,
+      durationMinutes: schema.service.durationMinutes,
+      priceCents: schema.service.priceCents,
+      currency: schema.service.currency,
+    })
+    .from(schema.service)
+    .where(
+      scoped(
+        schema.service.organizationId,
+        input.organizationId,
+        eq(schema.service.id, input.serviceId)
+      )
+    )
+    .limit(1);
+  const linkRows = await db
+    .select({ durationMinutes: schema.staffService.durationMinutes })
+    .from(schema.staffService)
+    .where(
+      scoped(
+        schema.staffService.organizationId,
+        input.organizationId,
+        and(
+          eq(schema.staffService.staffId, input.staffId),
+          eq(schema.staffService.serviceId, input.serviceId)
+        )
+      )
+    )
+    .limit(1);
+  const staff = staffRows[0];
+  const service = serviceRows[0];
+  const link = linkRows[0];
+  const end = new Date(
+    input.startUtc.getTime() +
+      (input.durationMinutes ?? link?.durationMinutes ?? service?.durationMinutes ?? 0) * 60_000
+  );
+  const blockRows = await blocksOverlapping(db, input.organizationId, {
+    staffId: input.staffId,
+    start: input.startUtc,
+    end,
+  });
+  return validateBookingTarget({
+    staff: staff
+      ? {
+          id: staff.id,
+          active: staff.active,
+          weeklyHours: (staff.weeklyHours as CalendarSettings["weeklyHours"] | null) ?? null,
+        }
+      : { id: input.staffId, active: false, weeklyHours: null },
+    service: service
+      ? {
+          id: service.id,
+          active: service.active,
+          durationMinutes: service.durationMinutes,
+          priceCents: service.priceCents,
+          currency: service.currency,
+        }
+      : null,
+    staffService: link ? { active: true, durationMinutes: link.durationMinutes } : null,
+    shopHours: input.shopHours,
+    blocks: blockRows,
+    startUtc: input.startUtc,
+    timeZone: input.timeZone,
+    durationMinutes: input.durationMinutes,
+  });
+}
+
+async function blocksOverlapping(
+  db: QueryDb,
+  organizationId: string,
+  input: { staffId: string; start: Date; end: Date }
+): Promise<Array<{ staffId: string | null; startUtc: Date; endUtc: Date }>> {
+  const lookback = new Date(input.start.getTime() - 16 * 60 * 60 * 1000);
+  const rows = await db
+    .select({
+      staffId: schema.booking.staffId,
+      scheduledAt: schema.booking.scheduledAt,
+      durationMinutes: schema.booking.durationMinutes,
+    })
+    .from(schema.booking)
+    .where(
+      scoped(
+        schema.booking.organizationId,
+        organizationId,
+        eq(schema.booking.kind, "block"),
+        inArray(schema.booking.status, ["agendada", "realizada"]),
+        eq(schema.booking.isTest, false),
+        or(eq(schema.booking.staffId, input.staffId), isNull(schema.booking.staffId)),
+        gte(schema.booking.scheduledAt, lookback),
+        lt(schema.booking.scheduledAt, input.end)
+      )
+    )
+    .limit(100);
+  return rows
+    .map((row) => ({
+      staffId: row.staffId,
+      startUtc: row.scheduledAt,
+      endUtc: new Date(row.scheduledAt.getTime() + row.durationMinutes * 60_000),
+    }))
+    .filter((row) => row.startUtc < input.end && row.endUtc > input.start);
+}
+
+async function sessionConflicts(
+  db: QueryDb,
+  organizationId: string,
+  input: { staffId: string | null; start: Date; end: Date; timeZone: string }
+): Promise<BlockConflict[]> {
+  const lookback = new Date(input.start.getTime() - 16 * 60 * 60 * 1000);
+  const rows = await db
+    .select({
+      id: schema.booking.id,
+      staffId: schema.booking.staffId,
+      scheduledAt: schema.booking.scheduledAt,
+      durationMinutes: schema.booking.durationMinutes,
+    })
+    .from(schema.booking)
+    .where(
+      scoped(
+        schema.booking.organizationId,
+        organizationId,
+        eq(schema.booking.kind, "session"),
+        inArray(schema.booking.status, ["agendada", "realizada"]),
+        eq(schema.booking.isTest, false),
+        eq(schema.booking.legacyOverlap, false),
+        input.staffId ? eq(schema.booking.staffId, input.staffId) : undefined,
+        gte(schema.booking.scheduledAt, lookback),
+        lt(schema.booking.scheduledAt, input.end)
+      )
+    )
+    .limit(50);
+  return rows
+    .filter((row) => {
+      const end = row.scheduledAt.getTime() + row.durationMinutes * 60_000;
+      return row.scheduledAt < input.end && end > input.start.getTime();
+    })
+    .map((row) => ({
+      bookingId: row.id,
+      staffId: row.staffId,
+      label: labelInTz(row.scheduledAt.toISOString(), input.timeZone),
+    }));
+}
+
 /** Códigos de Postgres con los que la BASE cierra un choque de hueco. */
 const SLOT_CONFLICT_CODES = new Set([
   "23505", // unique_violation (índice único de la 015)
   "23P01", // exclusion_violation (EXCLUDE por profesional, 018)
 ]);
 
-/** ¿La BASE rechazó el hueco? Cualquiera de las dos garantías cuenta igual. */
-export function isSlotConflict(err: unknown): boolean {
-  if (typeof err !== "object" || err === null) return false;
+function postgresCode(err: unknown): string | null {
+  if (typeof err !== "object" || err === null) return null;
   const code = (err as { code?: unknown }).code;
-  if (typeof code === "string" && SLOT_CONFLICT_CODES.has(code)) return true;
+  if (typeof code === "string") return code;
   // Drizzle envuelve el error del driver: el código real viaja en `cause`.
   const cause = (err as { cause?: unknown }).cause;
-  if (typeof cause !== "object" || cause === null) return false;
+  if (typeof cause !== "object" || cause === null) return null;
   const inner = (cause as { code?: unknown }).code;
-  return typeof inner === "string" && SLOT_CONFLICT_CODES.has(inner);
+  return typeof inner === "string" ? inner : null;
+}
+
+/** ¿La BASE rechazó el hueco? Cualquiera de las dos garantías cuenta igual. */
+export function isSlotConflict(err: unknown): boolean {
+  const code = postgresCode(err);
+  return code != null && SLOT_CONFLICT_CODES.has(code);
+}
+
+/**
+ * Dos INSERT solapados pueden trabarse en el EXCLUDE gist (`40P01`) en vez de
+ * que uno reciba `23P01`. El detector aborta una transacción y deja vivir la
+ * otra: reintentar la abortada la convierte en `slot_taken`.
+ */
+export function isDeadlock(err: unknown): boolean {
+  return postgresCode(err) === "40P01";
+}
+
+async function withDeadlockRetry<T>(run: () => Promise<T>): Promise<T> {
+  let last: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await run();
+    } catch (err) {
+      last = err;
+      if (!isDeadlock(err) || attempt === 2) throw err;
+    }
+  }
+  throw last;
 }

@@ -88,13 +88,15 @@ let updatedRow: Record<string, unknown> = {};
 
 function chain(rows: unknown[]) {
   const c: Record<string, unknown> = {};
-  for (const m of ["from", "where", "orderBy", "leftJoin"]) c[m] = () => c;
+  for (const m of ["from", "where", "orderBy", "leftJoin", "innerJoin"]) c[m] = () => c;
   c.limit = () => Promise.resolve(rows);
   return c;
 }
 
-vi.mock("@/lib/db", () => ({
-  getDb: () => ({
+const column = (name: string) => ({ name });
+
+vi.mock("@/lib/db", () => {
+  const db = {
     select: () => chain(selectRows.shift() ?? []),
     insert: () => ({
       values: (v: Record<string, unknown>) => ({
@@ -113,16 +115,65 @@ vi.mock("@/lib/db", () => ({
         }),
       }),
     }),
-  }),
-  schema: {
-    booking: {},
-    conversation: { organizationId: "organizationId", id: "id" },
-    contact: { organizationId: "organizationId", id: "id", name: "name" },
-    lead: { organizationId: "organizationId", contactId: "contactId" },
-    pipelineStage: { organizationId: "organizationId" },
-    offeredSlot: {},
-  },
-}));
+    execute: async () => [],
+    transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(db),
+  };
+  return {
+    getDb: () => db,
+    schema: {
+      booking: {
+        organizationId: column("organizationId"),
+        id: column("id"),
+        kind: column("kind"),
+        staffId: column("staffId"),
+        status: column("status"),
+        isTest: column("isTest"),
+        legacyOverlap: column("legacyOverlap"),
+        scheduledAt: column("scheduledAt"),
+        durationMinutes: column("durationMinutes"),
+        contactId: column("contactId"),
+      },
+      staff: {
+        organizationId: column("organizationId"),
+        id: column("id"),
+        active: column("active"),
+        weeklyHours: column("weeklyHours"),
+      },
+      service: {
+        organizationId: column("organizationId"),
+        id: column("id"),
+        active: column("active"),
+        durationMinutes: column("durationMinutes"),
+        priceCents: column("priceCents"),
+        currency: column("currency"),
+      },
+      staffService: {
+        organizationId: column("organizationId"),
+        staffId: column("staffId"),
+        serviceId: column("serviceId"),
+        durationMinutes: column("durationMinutes"),
+      },
+      conversation: {
+        organizationId: column("organizationId"),
+        id: column("id"),
+        contactId: column("contactId"),
+        isTest: column("isTest"),
+      },
+      contact: {
+        organizationId: column("organizationId"),
+        id: column("id"),
+        name: column("name"),
+      },
+      lead: {
+        organizationId: column("organizationId"),
+        contactId: column("contactId"),
+        id: column("id"),
+      },
+      pipelineStage: { organizationId: column("organizationId") },
+      offeredSlot: {},
+    },
+  };
+});
 
 const CITA_DE_PRUEBA = {
   id: "bk_test",
@@ -138,7 +189,21 @@ const CITA_DE_PRUEBA = {
   linkPending: false,
   notes: null,
   contactId: "ct_1",
+  staffId: "st_1",
+  serviceId: "sv_1",
 };
+
+function primeCatalog(isTest: boolean) {
+  selectRows.push([{ id: "st_1", active: true, weeklyHours: null }]);
+  selectRows.push([
+    { id: "sv_1", active: true, durationMinutes: 30, priceCents: 0, currency: "MXN" },
+  ]);
+  selectRows.push([{ durationMinutes: null }]);
+  selectRows.push([]);
+  selectRows.push([{ contactId: "ct_1", isTest }]);
+  selectRows.push([{ name: isTest ? "Persona simulada" : "Cliente real" }]);
+  selectRows.push([]);
+}
 
 describe("una cita del Laboratorio jamás llega al proveedor", () => {
   beforeEach(() => {
@@ -153,9 +218,7 @@ describe("una cita del Laboratorio jamás llega al proveedor", () => {
 
   it("al CREAR: la cita se registra como de prueba y no se crea reunión", async () => {
     const { createSessionBooking } = await import("@/server/agenda/service");
-    selectRows.push([{ contactId: "ct_1", isTest: true }]); // la conversación
-    selectRows.push([{ name: "Persona simulada" }]); // el contacto
-    selectRows.push([]); // sin lead
+    primeCatalog(true);
 
     const result = await createSessionBooking({
       organizationId: "org_1",
@@ -163,6 +226,8 @@ describe("una cita del Laboratorio jamás llega al proveedor", () => {
       startUtc: SLOT,
       source: "ai",
       requireOffer: true,
+      staffId: "st_1",
+      serviceId: "sv_1",
     });
 
     expect(lastInsert?.isTest).toBe(true);
@@ -198,9 +263,7 @@ describe("una cita del Laboratorio jamás llega al proveedor", () => {
 
   it("una cita REAL sí llega al proveedor (el guardarraíl no apaga todo)", async () => {
     const { createSessionBooking } = await import("@/server/agenda/service");
-    selectRows.push([{ contactId: "ct_1", isTest: false }]);
-    selectRows.push([{ name: "Cliente real" }]);
-    selectRows.push([]);
+    primeCatalog(false);
 
     await createSessionBooking({
       organizationId: "org_1",
@@ -208,6 +271,8 @@ describe("una cita del Laboratorio jamás llega al proveedor", () => {
       startUtc: SLOT,
       source: "ai",
       requireOffer: true,
+      staffId: "st_1",
+      serviceId: "sv_1",
     });
 
     expect(createMeeting).toHaveBeenCalledOnce();

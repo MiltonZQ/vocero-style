@@ -56,6 +56,9 @@ const putSchema = z.object({
  */
 export const PUT = withAuth(async (session, req: Request) => {
   if (!agendaEnabled()) return agendaDisabledResponse();
+  if (session.actor.role !== "owner") {
+    return apiError(403, "forbidden", "Sin acceso");
+  }
   const body = await parseBody(req, putSchema);
   if (!body.ok) return body.response;
 
