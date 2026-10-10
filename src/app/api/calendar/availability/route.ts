@@ -3,6 +3,7 @@ import { dayIsoInTz, timeInTz, dayLabelInTz } from "@/lib/time/slots";
 import { agendaDisabledResponse, agendaEnabled } from "@/server/agenda/flag";
 import { computeAvailability } from "@/server/agenda/availability";
 import {
+  listActiveServices,
   loadAvailabilityMeta,
   resolveAvailabilityTarget,
 } from "@/server/agenda/default-staff";
@@ -31,9 +32,59 @@ export const GET = withAuth(async (session, req: Request) => {
 
   const settings = await getSettings(session.organizationId);
   const now = new Date();
+  const rawStaff = url.searchParams.get("staffId");
+  const rawService = url.searchParams.get("serviceId");
+
+  if (rawStaff === "any") {
+    let serviceId = rawService;
+    if (!serviceId) {
+      const services = await listActiveServices(session.organizationId);
+      const only = services.length === 1 ? services[0] : undefined;
+      if (!only) {
+        return Response.json(
+          {
+            error: {
+              code: "service_required",
+              message: "Hay que elegir profesional y servicio",
+            },
+            services,
+          },
+          { status: 422 }
+        );
+      }
+      serviceId = only.id;
+    }
+    let anySlots;
+    try {
+      anySlots = await computeAvailability(session.organizationId, {
+        fromISO: from && ISO_DATE.test(from) ? from : undefined,
+        toISO: to && ISO_DATE.test(to) ? to : undefined,
+        settings,
+        now,
+        staffId: "any",
+        serviceId,
+      });
+    } catch (err) {
+      return agendaErrorResponse(err);
+    }
+    return Response.json({
+      slots: anySlots.map((s) => ({
+        ...s,
+        dayIso: dayIsoInTz(new Date(s.startUtc), settings.timezone),
+        dayLabel: dayLabelInTz(s.startUtc, settings.timezone, now),
+        time: timeInTz(s.startUtc, settings.timezone),
+        staffId: s.staffId ?? null,
+        staffName: s.staffName ?? null,
+        serviceId,
+        durationMinutes: s.durationMinutes ?? null,
+        priceCents: s.priceCents ?? null,
+      })),
+    });
+  }
+
   const target = await resolveAvailabilityTarget(session.organizationId, {
-    staffId: url.searchParams.get("staffId"),
-    serviceId: url.searchParams.get("serviceId"),
+    staffId: rawStaff,
+    serviceId: rawService,
   });
   if (!target.ok) {
     return Response.json(

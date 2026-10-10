@@ -61,15 +61,29 @@ export function aiMockCompletion(messages: InMessage[]): string {
     .filter((m) => m.role === "system" && m.content.includes(CABECERA_HUECOS))
     .flatMap((m) => m.content.match(/\d{4}-\d{2}-\d{2}T[\d:.]+Z/g) ?? []);
 
+  const systemAll = messages
+    .filter((m) => m.role === "system")
+    .map((m) => m.content)
+    .join("\n");
   const quiereCita = /cita|agendar|agenda|horario|reserv/.test(text);
   if (quiereCita && huecos.length === 0) {
-    return JSON.stringify({
+    const offer: {
+      action: "offer_slots";
+      reply: string;
+      service?: string;
+      staff?: string;
+    } = {
       action: "offer_slots",
       reply: "Claro, tengo estos horarios:",
-    });
+    };
+    const staff = staffForOffer(lastUser, systemAll);
+    const service = serviceForOffer(lastUser, systemAll);
+    if (staff) offer.staff = staff;
+    if (service) offer.service = service;
+    return JSON.stringify(offer);
   }
   const eligeUno = /primero|segundo|ese|esa|confirmo|quiero|me sirve/.test(text);
-  if (huecos.length > 0 && eligeUno) {
+  if (huecos.length > 0 && eligeUno && huecos[0]) {
     return JSON.stringify({
       action: "book_slot",
       startUtc: huecos[0],
@@ -101,4 +115,29 @@ export function aiMockCompletion(messages: InMessage[]): string {
     action: "reply",
     text: `Respuesta de prueba sobre: ${eco}`,
   });
+}
+
+function listedServices(systemText: string): string[] {
+  return [...systemText.matchAll(/^- (.+?) — \d+ min — /gm)].map((match) => match[1]!.trim());
+}
+
+function listedStaff(systemText: string): string[] {
+  return [...systemText.matchAll(/^\s+-\s+([^(\n]+?)(?:\s+\([^)\n]+\))?\s*$/gm)].map(
+    (match) => match[1]!.trim()
+  );
+}
+
+/** Nombres solo si el texto del cliente los pide. Nunca inventa un startUtc. */
+function staffForOffer(userText: string, systemText: string): string | undefined {
+  const lower = userText.toLowerCase();
+  if (lower.includes("el que esté libre") || lower.includes("el que este libre")) return "any";
+  if (lower.includes("no ofrece") || lower.includes("con alguien que no")) {
+    return "Nadie De Mentira";
+  }
+  return listedStaff(systemText).find((name) => lower.includes(name.toLowerCase()));
+}
+
+function serviceForOffer(userText: string, systemText: string): string | undefined {
+  const lower = userText.toLowerCase();
+  return listedServices(systemText).find((name) => lower.includes(name.toLowerCase()));
 }

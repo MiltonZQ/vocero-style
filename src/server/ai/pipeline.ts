@@ -17,7 +17,7 @@ import {
 import { matchesHandoffIntent } from "@/server/ai/handoff";
 import { buildAgentSystemPrompt } from "@/server/ai/prompts";
 import { agendaEnabled } from "@/server/agenda/flag";
-import { bookSlot, offerSlots } from "@/server/agenda/agent";
+import { bookSlot, loadActiveCatalog, offerSlots } from "@/server/agenda/agent";
 import { getOffers, mapaDeHuecosParaModelo } from "@/server/agenda/offers";
 import { readMediaFile } from "@/server/whatsapp/media";
 import { transcribeAudio } from "@/server/ai/transcribe";
@@ -184,6 +184,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     .orderBy(asc(schema.pipelineStage.position));
 
   const agenda = agendaEnabled();
+  const catalog = agenda ? await loadActiveCatalog(organizationId) : undefined;
 
   /**
    * 015 — Los huecos vigentes, con su instante exacto.
@@ -211,7 +212,26 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
   const messages: ChatMessage[] = [
     {
       role: "system",
-      content: buildAgentSystemPrompt({ profile, kb, stages, agenda }),
+      content: buildAgentSystemPrompt({
+        profile,
+        kb,
+        stages,
+        agenda,
+        catalog: catalog
+          ? {
+              services: catalog.services.map((service) => ({
+                name: service.name,
+                durationMinutes: service.durationMinutes,
+                priceCents: service.priceCents,
+                currency: service.currency,
+                staff: service.staff.map((person) => ({
+                  displayName: person.displayName,
+                  jobTitle: person.jobTitle,
+                })),
+              })),
+            }
+          : undefined,
+      }),
     },
     ...history
       .filter((m) => m.text)
@@ -228,7 +248,14 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       : []),
   ];
 
-  const result = await chatJson(agentActionSchema(agenda), messages);
+  let result;
+  try {
+    result = await chatJson(agentActionSchema(agenda), messages);
+  } catch (err) {
+    console.error(`[agente] fallo del proveedor: ${err}`);
+    await applyHandoff(conversationId, organizationId, "error");
+    return;
+  }
   if (!result.ok) {
     if (result.error === "not_configured") return;
     // Fallo persistente del proveedor o salida imposible → escalar (FR-022).
@@ -252,6 +279,8 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
                 organizationId,
                 conversationId,
                 intro: action.reply,
+                service: action.service,
+                staff: action.staff,
               })
             : await bookSlot({
                 organizationId,

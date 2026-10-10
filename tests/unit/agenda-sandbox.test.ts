@@ -62,12 +62,23 @@ vi.mock("@/server/agenda/default-staff", () => ({
 vi.mock("@/server/agenda/availability", () => ({
   findSlot: async () => ({ startUtc: SLOT, endUtc: "…", label: "mié 5 ago, 09:00" }),
   computeAvailability: async () => [],
+  rankStaffFreeAt: async () => [],
 }));
+
+let currentOffers: Array<{
+  startUtc: string;
+  label: string;
+  staffId?: string | null;
+  serviceId?: string | null;
+  durationMinutes?: number | null;
+  anyStaff?: boolean;
+}> = [{ startUtc: SLOT, label: "mié 5 ago, 09:00" }];
+
 vi.mock("@/server/agenda/offers", async (importOriginal) => {
   const original = await importOriginal<typeof import("@/server/agenda/offers")>();
   return {
     ...original,
-    getOffers: async () => [{ startUtc: SLOT, label: "mié 5 ago, 09:00" }],
+    getOffers: async () => currentOffers,
     replaceOffers: async () => {},
     clearOffers: async () => {},
   };
@@ -138,6 +149,9 @@ vi.mock("@/lib/db", () => {
         id: column("id"),
         active: column("active"),
         weeklyHours: column("weeklyHours"),
+        displayName: column("displayName"),
+        jobTitle: column("jobTitle"),
+        position: column("position"),
       },
       service: {
         organizationId: column("organizationId"),
@@ -209,6 +223,7 @@ describe("una cita del Laboratorio jamás llega al proveedor", () => {
   beforeEach(() => {
     selectRows.length = 0;
     lastInsert = null;
+    currentOffers = [{ startUtc: SLOT, label: "mié 5 ago, 09:00" }];
     updatedRow = { ...CITA_DE_PRUEBA };
     createMeeting.mockClear();
     updateMeeting.mockClear();
@@ -276,5 +291,34 @@ describe("una cita del Laboratorio jamás llega al proveedor", () => {
     });
 
     expect(createMeeting).toHaveBeenCalledOnce();
+  });
+
+  it("con profesional y servicio en la oferta, la cita de prueba tampoco llama al conector", async () => {
+    const { bookSlot } = await import("@/server/agenda/agent");
+    currentOffers = [
+      {
+        startUtc: SLOT,
+        label: "mié 5 ago, 09:00",
+        staffId: "st_1",
+        serviceId: "sv_1",
+        durationMinutes: 45,
+        anyStaff: false,
+      },
+    ];
+    primeCatalog(true);
+
+    const turn = await bookSlot({
+      organizationId: "org_1",
+      conversationId: "cv_lab",
+      startUtc: SLOT,
+    });
+
+    expect(turn.ok).toBe(true);
+    expect(lastInsert?.isTest).toBe(true);
+    expect(lastInsert?.staffId).toBe("st_1");
+    expect(lastInsert?.serviceId).toBe("sv_1");
+    expect(lastInsert?.durationMinutes).toBe(45);
+    expect(bindConnector).not.toHaveBeenCalled();
+    expect(createMeeting).not.toHaveBeenCalled();
   });
 });

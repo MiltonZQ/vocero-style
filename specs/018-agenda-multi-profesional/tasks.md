@@ -766,27 +766,27 @@ con la duración efectiva correcta.
 
 ### Tests primero (US6)
 
-- [ ] T102 [P] [US6] Crear `tests/unit/assignment.test.ts`: la escogencia de
+- [X] T102 [P] [US6] Crear `tests/unit/assignment.test.ts`: la escogencia de
       «cualquiera» — fusión de candidatos libres, reparto equitativo entre
       profesionales (el menos cargado del día) y desempate determinista por
       `position`; reintento con otro candidato libre si hubo carrera (D10); nunca
       elige a un profesional que no ofrece el servicio. Debe fallar
-- [ ] T103 [P] [US6] Crear `tests/unit/agent-resolve.test.ts`:
+- [X] T103 [P] [US6] Crear `tests/unit/agent-resolve.test.ts`:
       `resolveService(name, services)` y `resolveStaff(name, staff)` — exacto →
       minúsculas → sin acentos (patrón de `resolveStage`), `"any"`/omitido →
       `any`, sin coincidencia → `null` (nunca inventa ni lanza); instancia de un
       solo profesional/servicio no pregunta (FR-032). Debe fallar
-- [ ] T104 [P] [US6] Editar `tests/unit/agenda-huecos-modelo.test.ts` y
+- [X] T104 [P] [US6] Editar `tests/unit/agenda-huecos-modelo.test.ts` y
       `tests/unit/agenda-contract.test.ts`: `mapaDeHuecosParaModelo` añade
       `· <staff>` solo si hay profesional nombrado; `OfferedSlot` incluye
       `staffId`, `serviceId`, `durationMinutes`, `anyStaff`; `offer_slots`
       acepta `service?`/`staff?` y `book_slot` no cambia; con bandera apagada el
       esquema/prompt del agente no cambia (0 tokens). Debe fallar
-- [ ] T105 [P] [US6] Editar `tests/unit/agenda-sandbox.test.ts`: una
+- [X] T105 [P] [US6] Editar `tests/unit/agenda-sandbox.test.ts`: una
       conversación `is_test` produce cita `is_test` (fuera del constraint y de la
       disponibilidad real) y nunca llega a un conector, también con
       profesional/servicio. Debe fallar si se rompe el guardrail
-- [ ] T106 [US6] Agregar a `scripts/e2e-selftest.mjs` una sección
+- [X] T106 [US6] Agregar a `scripts/e2e-selftest.mjs` una sección
       `agenteMultiChecks()` (RED), con `ai-mock` y `wa-mock`, que cubre los 7
       puntos de contracts/agent.md §4: (1) servicio + profesional nombrado →
       todos los huecos ofrecidos son de ese profesional y de duración efectiva;
@@ -803,20 +803,20 @@ con la duración efectiva correcta.
 
 ### Implementación (US6)
 
-- [ ] T107 [US6] Crear `src/server/agenda/assignment.ts`: `pickAssignee(
+- [X] T107 [US6] Crear `src/server/agenda/assignment.ts`: `pickAssignee(
       candidates, load)` pura (reparto + desempate por `position`) y
       `rankCandidates`; pone en verde `tests/unit/assignment.test.ts`
-- [ ] T108 [US6] Editar `src/server/agenda/availability.ts`: modo `staffId:
+- [X] T108 [US6] Editar `src/server/agenda/availability.ts`: modo `staffId:
       "any"` — UNA consulta de ocupados para todos los candidatos que ofrecen el
       servicio (no N consultas), fusión de huecos por instante con el profesional
       asignado por `assignment.ts`; `GET /api/calendar/availability` en
       `src/app/api/calendar/availability/route.ts` acepta `staffId=any`
-- [ ] T109 [US6] Editar `src/server/agenda/offers.ts`: `OfferedSlot` y
+- [X] T109 [US6] Editar `src/server/agenda/offers.ts`: `OfferedSlot` y
       `replaceOffers`/`getOffers` con `staffId`, `serviceId`, `durationMinutes`,
       `anyStaff` (una fila por instante, `findOffered` por epoch exacto);
       `mapaDeHuecosParaModelo` añade `· staff` solo con profesional nombrado;
       ofertas legadas (columnas NULL) siguen leyéndose (D8)
-- [ ] T110 [US6] Editar `src/server/agenda/agent.ts`: `resolveService`,
+- [X] T110 [US6] Editar `src/server/agenda/agent.ts`: `resolveService`,
       `resolveStaff` (pone en verde `tests/unit/agent-resolve.test.ts`);
       `offerSlots({ service, staff })` con las reglas de oferta (solo
       combinaciones válidas, profesional que no ofrece → lo dice y propone a
@@ -825,46 +825,46 @@ con la duración efectiva correcta.
       fila ofrecida, valida con `findSlot`, `slot_taken` con reintento único si
       `anyStaff`, alternativas frescas registradas, y confirma
       `¡Listo! Te agendé para <label> con <Nombre>.`
-- [ ] T111 [P] [US6] Editar `src/server/ai/actions.ts`: `offer_slots` con
+- [X] T111 [P] [US6] Editar `src/server/ai/actions.ts`: `offer_slots` con
       `service?` y `staff?` (esquema solo con bandera, `agentActionSchema(agenda)`);
       `book_slot` sin cambio de entrada
-- [ ] T112 [P] [US6] Editar `src/server/ai/prompts.ts`: sección condicional de
+- [X] T112 [P] [US6] Editar `src/server/ai/prompts.ts`: sección condicional de
       agenda con tabla compacta de servicios activos (`nombre — duración —
       precio`) y por servicio los profesionales que lo ofrecen (`nombre
       (oficio)`); con la bandera apagada, 0 tokens
-- [ ] T113 [US6] Editar `src/server/ai/pipeline.ts`: pasar `service`/`staff` a
+- [X] T113 [US6] Editar `src/server/ai/pipeline.ts`: pasar `service`/`staff` a
       `offerSlots`; degradar a respuesta generada por el motor si no resuelven;
       un fallo del proveedor nunca crea una cita a medias. Corregir cualquier
       lectura directa de `booking` que marque `tests/unit/no-direct-booking-reads.test.ts`
-- [ ] T114 [P] [US6] Crear `src/app/api/bot/catalog/route.ts` (`GET`, auth
+- [X] T114 [P] [US6] Crear `src/app/api/bot/catalog/route.ts` (`GET`, auth
       `requireBotKey`, bandera antes que la llave): servicios activos con los
       profesionales activos que los ofrecen y `effectiveDurationMinutes`,
       `singleStaff`, `singleService`; sin `phone` de profesionales
-- [ ] T115 [US6] Editar `src/app/api/bot/availability/route.ts`: parámetros
+- [X] T115 [US6] Editar `src/app/api/bot/availability/route.ts`: parámetros
       `serviceId`, `staffId` (`id|any`), registra la oferta con
       `staff_id/service_id/duration`; `422 service_required` con `services` si es
       ambiguo, `422 service_not_offered`, `404 not_found` conversación
       inexistente; respuesta con `staffId`, `staffName`, `priceCents` por hueco
-- [ ] T116 [US6] Editar `src/app/api/bot/bookings/route.ts`: `POST` cuerpo sin
+- [X] T116 [US6] Editar `src/app/api/bot/bookings/route.ts`: `POST` cuerpo sin
       cambio, **201** exacto con los campos nuevos; `PATCH` reprograma con el
       mismo profesional y servicio (`offered_slot.staff_id = booking.staff_id`,
       otro profesional → `409 slot_not_offered`); `409 slot_taken` con `slots`
       hermano
-- [ ] T117 [P] [US6] Editar `src/server/dev/ai-mock.ts`: emitir `offer_slots`
+- [X] T117 [P] [US6] Editar `src/server/dev/ai-mock.ts`: emitir `offer_slots`
       con `service`/`staff` y `book_slot` según las frases del guion del
       self-test (profesional nombrado, «el que esté libre», servicio no
       ofrecido)
-- [ ] T118 [P] [US6] Editar `src/server/lab/personas.ts` y
+- [X] T118 [P] [US6] Editar `src/server/lab/personas.ts` y
       `src/server/lab/runner.ts`: personas `agenda_profesional_nombrado`,
       `agenda_cualquiera` y `agenda_servicio_no_ofrecido` con marcadores
       `{{service1}}`, `{{service2}}`, `{{staff1}}` resueltos contra el primer
       servicio/profesional activos y relacionados de la instancia de prueba; si
       el runner no admite marcadores, resolverlos al construir el guion
-- [ ] T119 [US6] Editar `src/server/lab/judge.ts`: criterio de agenda que
+- [X] T119 [US6] Editar `src/server/lab/judge.ts`: criterio de agenda que
       verifica profesional, servicio y duración con el estado de la BD de la
       corrida (SC-005 ≥ 95 %); el juicio con modelo real queda **pendiente de
       verificación humana** si no hay `OPENROUTER_API_TOKEN`
-- [ ] T120 [US6] Correr `pnpm test:e2e` (`agenteMultiChecks()`): los 7 puntos en
+- [X] T120 [US6] Correr `pnpm test:e2e` (`agenteMultiChecks()`): los 7 puntos en
       verde, incluido el camino infeliz; corridas del Laboratorio con `ai-mock`.
       Registrar RED→GREEN
 

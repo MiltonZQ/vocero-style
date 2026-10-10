@@ -38,6 +38,8 @@ const baseActions = [
 const agendaActions = [
   z.object({
     action: z.literal("offer_slots"),
+    service: z.string().optional(),
+    staff: z.string().optional(),
     reply: z.string().optional(),
   }),
   z.object({

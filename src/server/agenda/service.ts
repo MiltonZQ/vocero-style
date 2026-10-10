@@ -1,4 +1,4 @@
-import { and, asc, eq, gte, inArray, isNull, lt, or } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lt, or } from "drizzle-orm";
 import { getDb, schema } from "@/lib/db";
 import { newId } from "@/lib/db/ids";
 import { scoped } from "@/lib/db/tenant";
@@ -77,6 +77,13 @@ export async function createSessionBooking(input: {
   now?: Date;
   staffId: string;
   serviceId: string;
+  /** Duración de la fila ofrecida. Sin ella se usa la del catálogo. */
+  durationMinutes?: number;
+  /**
+   * false ⇒ `slot_taken` no reemplaza la oferta. El agente reintenta una vez
+   * con otro profesional antes de registrar alternativas.
+   */
+  refreshOnTaken?: boolean;
 }): Promise<BookingResult> {
   const db = getDb();
   const settings = await getSettings(input.organizationId);
@@ -96,6 +103,7 @@ export async function createSessionBooking(input: {
     startUtc,
     timeZone: settings.timezone,
     shopHours: settings.weeklyHours,
+    durationMinutes: input.durationMinutes,
   });
 
   // Contexto de la conversación: contacto y si es del Laboratorio.
@@ -158,12 +166,14 @@ export async function createSessionBooking(input: {
     throw new BookingError(
       "slot_taken",
       "Ese horario ya no está disponible",
-      await refreshOffer(input.organizationId, input.conversationId, {
-        now: input.now,
-        staffId: input.staffId,
-        serviceId: input.serviceId,
-        durationMinutes: snapshot.durationMinutes,
-      })
+      input.refreshOnTaken === false
+        ? []
+        : await refreshOffer(input.organizationId, input.conversationId, {
+            now: input.now,
+            staffId: input.staffId,
+            serviceId: input.serviceId,
+            durationMinutes: snapshot.durationMinutes,
+          })
     );
   }
 
@@ -219,12 +229,14 @@ export async function createSessionBooking(input: {
     }));
   } catch (err) {
     if (err instanceof BookingError) {
-      err.slots = await refreshOffer(input.organizationId, input.conversationId, {
-        now: input.now,
-        staffId: input.staffId,
-        serviceId: input.serviceId,
-        durationMinutes: snapshot.durationMinutes,
-      });
+      if (input.refreshOnTaken !== false) {
+        err.slots = await refreshOffer(input.organizationId, input.conversationId, {
+          now: input.now,
+          staffId: input.staffId,
+          serviceId: input.serviceId,
+          durationMinutes: snapshot.durationMinutes,
+        });
+      }
       throw err;
     }
     // 23505 (015) and 23P01 (EXCLUDE por profesional) are the same answer.
@@ -232,12 +244,14 @@ export async function createSessionBooking(input: {
       throw new BookingError(
         "slot_taken",
         "Ese horario acaba de ocuparse",
-        await refreshOffer(input.organizationId, input.conversationId, {
-          now: input.now,
-          staffId: input.staffId,
-          serviceId: input.serviceId,
-          durationMinutes: snapshot.durationMinutes,
-        })
+        input.refreshOnTaken === false
+          ? []
+          : await refreshOffer(input.organizationId, input.conversationId, {
+              now: input.now,
+              staffId: input.staffId,
+              serviceId: input.serviceId,
+              durationMinutes: snapshot.durationMinutes,
+            })
       );
     }
     throw err;
@@ -461,7 +475,8 @@ export async function rescheduleForConversation(input: {
 
   // Mismas reglas que al crear: el instante nuevo tiene que haberse ofrecido.
   const offers = await getOffers(input.organizationId, input.conversationId);
-  if (!findOffered(offers, input.startUtc)) {
+  const offered = findOffered(offers, input.startUtc);
+  if (!offered) {
     throw new BookingError(
       "slot_not_offered",
       "Ese horario no se ofreció en esta conversación",
@@ -490,6 +505,13 @@ export async function rescheduleForConversation(input: {
   const target = rows[0];
   if (!target) {
     throw new BookingError("not_found", "No hay una cita activa que mover");
+  }
+  if (offered.staffId !== target.staffId) {
+    throw new BookingError(
+      "slot_not_offered",
+      "Ese horario no se ofreció para este profesional",
+      offers
+    );
   }
 
   const result = await rescheduleBooking({
@@ -799,6 +821,11 @@ async function refreshOffer(
   const offers: OfferedSlot[] = fresh.map((s) => ({
     startUtc: s.startUtc,
     label: s.label,
+    staffId: s.staffId ?? opts.staffId,
+    serviceId: opts.serviceId,
+    durationMinutes: s.durationMinutes ?? opts.durationMinutes ?? null,
+    anyStaff: false,
+    staffName: s.staffName ?? null,
   }));
   if (conversationId && offers.length > 0) {
     await replaceOffers(organizationId, conversationId, offers).catch((err) => {
@@ -902,6 +929,71 @@ async function advanceLeadStage(
 
 /** Citas que ocupan agenda de verdad. */
 export const ACTIVE_STATUSES = ["agendada", "realizada"] as const;
+
+export type ConversationBookingCheck = {
+  staffId: string | null;
+  staffName: string | null;
+  serviceId: string | null;
+  serviceName: string | null;
+  durationMinutes: number;
+  effectiveDurationMinutes: number | null;
+  isTest: boolean;
+};
+
+/**
+ * La cita de una conversación, para el juez del Laboratorio.
+ * Vive aquí para que `lab/` no lea `booking` directo.
+ */
+export async function testBookingForConversation(
+  organizationId: string,
+  conversationId: string
+): Promise<ConversationBookingCheck | null> {
+  const db = getDb();
+  const rows = await db
+    .select({
+      staffId: schema.booking.staffId,
+      staffName: schema.staff.displayName,
+      serviceId: schema.booking.serviceId,
+      serviceName: schema.service.name,
+      durationMinutes: schema.booking.durationMinutes,
+      catalogDuration: schema.service.durationMinutes,
+      ownDuration: schema.staffService.durationMinutes,
+      isTest: schema.booking.isTest,
+      status: schema.booking.status,
+    })
+    .from(schema.booking)
+    .leftJoin(schema.staff, eq(schema.booking.staffId, schema.staff.id))
+    .leftJoin(schema.service, eq(schema.booking.serviceId, schema.service.id))
+    .leftJoin(
+      schema.staffService,
+      and(
+        eq(schema.staffService.staffId, schema.booking.staffId),
+        eq(schema.staffService.serviceId, schema.booking.serviceId)
+      )
+    )
+    .where(
+      scoped(
+        schema.booking.organizationId,
+        organizationId,
+        eq(schema.booking.conversationId, conversationId),
+        eq(schema.booking.kind, "session")
+      )
+    )
+    .orderBy(desc(schema.booking.createdAt))
+    .limit(1);
+  const row = rows[0];
+  if (!row || row.status === "cancelada") return null;
+  return {
+    staffId: row.staffId,
+    staffName: row.staffName,
+    serviceId: row.serviceId,
+    serviceName: row.serviceName,
+    durationMinutes: row.durationMinutes,
+    effectiveDurationMinutes:
+      row.ownDuration ?? row.catalogDuration ?? null,
+    isTest: row.isTest,
+  };
+}
 
 /** ¿Hay alguna cita activa para este contacto? Lo usa el agente. */
 export async function hasActiveBooking(

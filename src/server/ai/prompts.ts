@@ -1,10 +1,37 @@
 import type { schema } from "@/lib/db";
+import { formatMoneyCents } from "@/lib/money";
 
 type AgentProfile = typeof schema.agentProfile.$inferSelect;
 type KbEntry = typeof schema.kbEntry.$inferSelect;
 
 /** Marcador del prompt del juez: el ai-mock lo usa para despachar veredictos. */
 export const JUDGE_MARKER = "[JUEZ]";
+
+export type AgendaPromptCatalog = {
+  services: Array<{
+    name: string;
+    durationMinutes: number;
+    priceCents: number;
+    currency: string;
+    staff: Array<{ displayName: string; jobTitle: string | null }>;
+  }>;
+};
+
+function renderAgendaCatalog(catalog: AgendaPromptCatalog): string {
+  const lines = ["Catálogo de la agenda (usa estos nombres tal cual en offer_slots):"];
+  for (const service of catalog.services) {
+    const price =
+      formatMoneyCents(service.priceCents, service.currency) ??
+      `${service.priceCents} ${service.currency}`;
+    lines.push(`- ${service.name} — ${service.durationMinutes} min — ${price}`);
+    for (const person of service.staff) {
+      const job = person.jobTitle ? ` (${person.jobTitle})` : "";
+      lines.push(`  - ${person.displayName}${job}`);
+    }
+  }
+  lines.push('Si el cliente no nombra profesional, manda staff "any". Si nombra uno, usa su nombre.');
+  return lines.join("\n");
+}
 
 export function renderKb(entries: KbEntry[]): string {
   if (entries.length === 0) return "(knowledge base vacío)";
@@ -31,6 +58,8 @@ export function buildAgentSystemPrompt(input: {
    * token en hablar de horarios: la agenda no existe aquí.
    */
   agenda?: boolean;
+  /** 018 — servicios y quién los ofrece. Se ignora con la agenda apagada. */
+  catalog?: AgendaPromptCatalog;
 }): string {
   const { profile } = input;
   const stageNames = input.stages.map((s) => s.name).join(" | ");
@@ -45,8 +74,13 @@ export function buildAgentSystemPrompt(input: {
         "- NUNCA escribas tú los horarios ni los inventes: usa offer_slots y el sistema pega los reales.",
         "- book_slot solo acepta un horario que el sistema ofreció antes en ESTA conversación. Si el cliente pide otro, vuelve a ofrecer con offer_slots.",
         "- Si el cliente quiere CANCELAR una cita → handoff: esa decisión no es tuya.",
+        "- service y staff son NOMBRES del catálogo, nunca ids. staff omitido o \"any\" = quien esté libre.",
       ]
     : [];
+  const catalogText =
+    input.agenda && input.catalog && input.catalog.services.length > 0
+      ? renderAgendaCatalog(input.catalog)
+      : null;
   return [
     `Eres "${profile.name}", el asistente de WhatsApp de este negocio. Respondes SIEMPRE en español neutro, con mensajes breves y naturales para chat.`,
     profile.tone ? `Tono: ${profile.tone}` : null,
@@ -56,6 +90,7 @@ export function buildAgentSystemPrompt(input: {
       : null,
     profile.greeting ? `Saludo sugerido para conversaciones nuevas: ${profile.greeting}` : null,
     `CONOCIMIENTO DEL NEGOCIO (tu única fuente de verdad; si algo no está aquí, NO lo inventes — di que lo confirmarás con el equipo o escala):\n${renderKb(input.kb)}`,
+    catalogText,
     `Etapas del pipeline disponibles: ${stageNames}`,
     [
       "En cada turno respondes ÚNICAMENTE un objeto JSON con UNA acción:",

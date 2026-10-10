@@ -1156,6 +1156,8 @@ async function agendaChecks() {
     ok(`${ruta} responde con la agenda encendida`, res.ok, `status=${res.status}`);
   }
 
+  await retirarExtrasAgenda();
+
   console.log("\n== 015: configuración de la agenda (US2) ==");
   const defaults = (await api("/api/calendar/settings")).json?.settings;
   ok(
@@ -1648,12 +1650,582 @@ async function agendaChecks() {
   // `tests/unit/agenda-sandbox.test.ts`, que afirma lo que de verdad importa:
   // que el conector no se llama, ni al crear, ni al reprogramar, ni al
   // cancelar.
+
+  await agenteMultiChecks();
 }
 
-main().catch((err) => {
-  console.error("ERROR FATAL:", err);
-  process.exit(1);
-});
+/**
+ * 018 — Agente multi-profesional (contracts/agent.md §4).
+ * Los extras se retiran al salir para que la 015 siga viendo un solo
+ * profesional y un solo servicio en la corrida siguiente.
+ */
+const EXTRA_STAFF_NAME = "E2E Luz";
+const EXTRA_SERVICE_NAME = "E2E Tinte";
+
+async function retirarExtrasAgenda() {
+  const staff = (await api("/api/staff?includeInactive=1")).json?.staff ?? [];
+  for (const person of staff) {
+    if (person.displayName !== EXTRA_STAFF_NAME) continue;
+    const del = await api(`/api/staff/${person.id}`, { method: "DELETE" });
+    if (del.res.status !== 204) {
+      await api(`/api/staff/${person.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ active: false }),
+      });
+    }
+  }
+  const services = (await api("/api/services?includeInactive=1")).json?.services ?? [];
+  for (const service of services) {
+    if (service.name !== EXTRA_SERVICE_NAME) continue;
+    const del = await api(`/api/services/${service.id}`, { method: "DELETE" });
+    if (del.res.status !== 204) {
+      await api(`/api/services/${service.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ active: false }),
+      });
+    }
+  }
+}
+
+async function agenteMultiChecks() {
+  console.log("\n== 018: agente multi-profesional ==");
+  const perfil = await api("/api/agent/profile");
+  const estaba = perfil.json?.profile?.enabled === true;
+  const corrida = Date.now().toString().slice(-6);
+  let n = 0;
+
+  const decir = (from, name, texto) => {
+    n += 1;
+    return api("/api/dev/wa-mock/inbound", {
+      method: "POST",
+      body: JSON.stringify({
+        phoneNumberId: PN,
+        from,
+        name,
+        text: texto,
+        waMessageId: `wamid.e2e.018.${corrida}.${n}`,
+      }),
+    });
+  };
+
+  const telefonoGuardado = (from) => {
+    if (from.startsWith("521")) return `52${from.slice(3)}`;
+    return from;
+  };
+
+  const esperarConv = async (from) => {
+    const phone = telefonoGuardado(from);
+    const lista = await hasta(async () => {
+      const cs = (await api("/api/conversations")).json?.conversations ?? [];
+      return cs.some((c) => c.contact?.phone === phone);
+    });
+    if (!lista) return null;
+    const cs = (await api("/api/conversations")).json?.conversations ?? [];
+    return cs.find((c) => c.contact?.phone === phone) ?? null;
+  };
+
+  const salientes = async (convId) => {
+    const msgs =
+      (await api(`/api/conversations/${convId}/messages`)).json?.messages ?? [];
+    return msgs.filter((m) => m.direction === "out");
+  };
+
+  const citasDe = async (convId) => {
+    const rows = (await api("/api/bookings")).json?.bookings ?? [];
+    return rows.filter((b) => b.conversationId === convId && b.kind !== "block");
+  };
+
+  try {
+    await api("/api/agent/profile", {
+      method: "PUT",
+      body: JSON.stringify({ enabled: true }),
+    });
+
+    const activos = ((await api("/api/staff")).json?.staff ?? []).filter(
+      (s) => s.active !== false
+    );
+    const sole = activos.length === 1 ? activos[0] : null;
+    ok(
+      "un solo profesional activo antes de crear extras",
+      Boolean(sole?.displayName),
+      `activos=${activos.length}`
+    );
+
+    if (sole) {
+      const from5 = `5214635${corrida}`;
+      await decir(from5, "Lead 018 sole", "quiero agendar una cita");
+      const conv5 = await esperarConv(from5);
+      ok("el agente atendió la instancia de un profesional", Boolean(conv5));
+      if (conv5) {
+        await hasta(async () => (await salientes(conv5.id)).length > 0);
+        const texto = (await salientes(conv5.id)).at(-1)?.text ?? "";
+        ok(
+          "con un solo profesional el agente no lo menciona",
+          texto.length > 0 && !texto.includes(sole.displayName),
+          texto.slice(0, 160)
+        );
+      }
+    }
+
+    const luzRes = await api("/api/staff", {
+      method: "POST",
+      body: JSON.stringify({
+        displayName: EXTRA_STAFF_NAME,
+        jobTitle: "Colorista",
+        color: "#aa3377",
+      }),
+    });
+    const luzId = luzRes.json?.staff?.id ?? null;
+    ok("alta de E2E Luz → 201", luzRes.res.status === 201 && Boolean(luzId), `status=${luzRes.res.status}`);
+
+    const servicios = (await api("/api/services")).json?.services ?? [];
+    const cita = servicios.find((s) => s.name === "Cita" && s.active !== false) ?? null;
+    ok("existe el servicio Cita", Boolean(cita?.id));
+
+    const tinteRes = await api("/api/services", {
+      method: "POST",
+      body: JSON.stringify({
+        name: EXTRA_SERVICE_NAME,
+        durationMinutes: 60,
+        priceCents: 80000,
+        currency: "MXN",
+      }),
+    });
+    const tinteId = tinteRes.json?.service?.id ?? null;
+    ok(
+      "alta de E2E Tinte → 201",
+      tinteRes.res.status === 201 && Boolean(tinteId),
+      `status=${tinteRes.res.status}`
+    );
+
+    if (luzId && cita?.id) {
+      const link = await api(`/api/staff/${luzId}/services/${cita.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ durationMinutes: 45 }),
+      });
+      ok("E2E Luz ofrece Cita a 45 min", link.res.ok, `status=${link.res.status}`);
+    }
+    if (luzId && tinteId) {
+      const link = await api(`/api/staff/${luzId}/services/${tinteId}`, {
+        method: "PUT",
+        body: JSON.stringify({}),
+      });
+      ok("E2E Luz ofrece E2E Tinte", link.res.ok, `status=${link.res.status}`);
+    }
+
+    if (luzId && cita?.id && sole) {
+      const from1 = `5214631${corrida}`;
+      await decir(from1, "Lead 018 nombrado", "quiero agendar una cita con E2E Luz");
+      const conv1 = await esperarConv(from1);
+      ok("(1) hay conversación para el profesional nombrado", Boolean(conv1));
+      if (conv1) {
+        await hasta(async () =>
+          (await salientes(conv1.id)).some((m) => /a las \d{2}:\d{2}/.test(m.text ?? ""))
+        );
+        const oferta = (await salientes(conv1.id)).find((m) =>
+          /a las \d{2}:\d{2}/.test(m.text ?? "")
+        );
+        const lineas = (oferta?.text ?? "")
+          .split("\n")
+          .filter((line) => /a las \d{2}:\d{2}/.test(line));
+        ok(
+          "(1) todos los huecos ofrecidos son de E2E Luz",
+          lineas.length > 0 && lineas.every((line) => line.includes("con E2E Luz")),
+          (oferta?.text ?? "").slice(0, 200)
+        );
+
+        const antes = await citasDe(conv1.id);
+        await decir(from1, "Lead 018 nombrado", "quiero el primero");
+        await hasta(async () => (await citasDe(conv1.id)).length > antes.length);
+        const citas = await citasDe(conv1.id);
+        const nueva = citas.find((b) => !antes.some((prev) => prev.id === b.id));
+        ok(
+          "(1) la cita queda con E2E Luz y duración efectiva 45",
+          nueva?.staff?.id === luzId && nueva?.durationMinutes === 45,
+          JSON.stringify({
+            staff: nueva?.staff,
+            duration: nueva?.durationMinutes,
+            service: nueva?.service,
+          })
+        );
+      }
+
+      const from2 = `5214632${corrida}`;
+      await decir(
+        from2,
+        "Lead 018 any",
+        "Quiero agendar una cita, el que esté libre"
+      );
+      const conv2 = await esperarConv(from2);
+      ok("(2) hay conversación para cualquiera", Boolean(conv2));
+      if (conv2) {
+        await hasta(async () =>
+          (await salientes(conv2.id)).some((m) => /a las \d{2}:\d{2}/.test(m.text ?? ""))
+        );
+        const oferta = (await salientes(conv2.id)).find((m) =>
+          /a las \d{2}:\d{2}/.test(m.text ?? "")
+        );
+        const texto = oferta?.text ?? "";
+        ok(
+          "(2) la oferta de cualquiera no nombra profesional",
+          /a las \d{2}:\d{2}/.test(texto) &&
+            !texto.includes(EXTRA_STAFF_NAME) &&
+            !texto.includes(sole.displayName),
+          texto.slice(0, 200)
+        );
+        const antes = await citasDe(conv2.id);
+        await decir(from2, "Lead 018 any", "quiero el primero");
+        await hasta(async () => (await citasDe(conv2.id)).length > antes.length);
+        const citas = await citasDe(conv2.id);
+        const nueva = citas.find((b) => !antes.some((prev) => prev.id === b.id));
+        const staffOk =
+          nueva?.staff?.id === luzId || nueva?.staff?.id === sole.id;
+        const confirma = (await salientes(conv2.id)).some((m) =>
+          (m.text ?? "").includes(`con ${nueva?.staff?.name ?? "___"}`)
+        );
+        ok(
+          "(2) la cita queda con el profesional del hueco elegido",
+          Boolean(nueva?.staff?.id) && staffOk && confirma,
+          JSON.stringify({ staff: nueva?.staff, confirma })
+        );
+      }
+
+      const from3 = `5214633${corrida}`;
+      await decir(
+        from3,
+        "Lead 018 no ofrece",
+        `quiero agendar un E2E Tinte con ${sole.displayName}`
+      );
+      const conv3 = await esperarConv(from3);
+      ok("(3) hay conversación para el servicio no ofrecido", Boolean(conv3));
+      if (conv3) {
+        await hasta(async () => (await salientes(conv3.id)).length > 0);
+        const texto = (await salientes(conv3.id)).at(-1)?.text ?? "";
+        const citas = await citasDe(conv3.id);
+        ok(
+          "(3) dice quién sí lo ofrece, sin horarios y sin cita",
+          /no ofrece/i.test(texto) &&
+            texto.includes(EXTRA_STAFF_NAME) &&
+            !/a las \d{2}:\d{2}/.test(texto) &&
+            citas.length === 0,
+          `citas=${citas.length} texto=${texto.slice(0, 200)}`
+        );
+      }
+    }
+
+    if (luzId && tinteId) {
+      const from4 = `5214634${corrida}`;
+      await decir(
+        from4,
+        "Lead 018 carrera",
+        "quiero agendar un E2E Tinte con E2E Luz"
+      );
+      const conv4 = await esperarConv(from4);
+      ok("(4) hay conversación para ocupar el hueco", Boolean(conv4));
+      if (conv4) {
+        await hasta(async () =>
+          (await salientes(conv4.id)).some((m) => /a las \d{2}:\d{2}/.test(m.text ?? ""))
+        );
+        const fromH = `5214636${corrida}`;
+        await decir(fromH, "Lead 018 helper", "hola");
+        const helper = await esperarConv(fromH);
+        const oferta = helper
+          ? await bot(
+              `/api/bot/availability?conversationId=${helper.id}&serviceId=${tinteId}&staffId=${luzId}&limit=12&perDay=3&days=14`
+            )
+          : null;
+        const tomado = oferta?.json?.slots?.[0];
+        let robado = null;
+        if (helper && tomado) {
+          robado = await bot("/api/bot/bookings", {
+            method: "POST",
+            body: JSON.stringify({
+              conversationId: helper.id,
+              startUtc: tomado.startUtc,
+            }),
+          });
+        }
+        ok(
+          "(4) otro cliente toma el primer hueco ofrecido",
+          robado?.res.status === 201,
+          `status=${robado?.res.status}`
+        );
+        const antes = (await citasDe(conv4.id)).length;
+        await decir(from4, "Lead 018 carrera", "quiero el primero");
+        await hasta(async () => {
+          const outs = await salientes(conv4.id);
+          return outs.some((m) => /ocupar|perdón|perdon/i.test(m.text ?? ""));
+        });
+        const texto = (await salientes(conv4.id)).map((m) => m.text ?? "").join("\n");
+        const despues = await citasDe(conv4.id);
+        ok(
+          "(4) hueco ocupado: disculpa, alternativas y cero citas de esa conversación",
+          /ocupar|perdón|perdon/i.test(texto) &&
+            /a las \d{2}:\d{2}|• /.test(texto) &&
+            despues.length === antes,
+          `antes=${antes} despues=${despues.length} texto=${texto.slice(-240)}`
+        );
+      }
+    }
+
+    const lab = await api("/api/lab/runs", { method: "POST" });
+    ok(
+      "(6) el Laboratorio acepta la corrida (202)",
+      lab.res.status === 202 && Boolean(lab.json?.runId),
+      `status=${lab.res.status} ${JSON.stringify(lab.json)}`
+    );
+    if (lab.res.status === 202 && lab.json?.runId) {
+      const runId = lab.json.runId;
+      const termino = await hasta(async () => {
+        const runs = (await api("/api/lab/runs")).json?.runs ?? [];
+        const run = runs.find((r) => r.id === runId);
+        return run?.status === "done" || run?.status === "error";
+      }, 120000, 1000);
+      ok("(6) la corrida del Laboratorio termina", termino);
+      const citas = (await api("/api/bookings")).json?.bookings ?? [];
+      const prueba = citas.find(
+        (b) => b.isTest === true && b.status !== "cancelada" && b.kind !== "block"
+      );
+      ok(
+        "(6) la conversación is_test deja una cita is_test",
+        Boolean(prueba),
+        `isTest=${citas.filter((b) => b.isTest).length}`
+      );
+      if (prueba?.staff?.id && prueba?.service?.id && prueba.scheduledAtUtc) {
+        const disp = await api(
+          `/api/calendar/availability?staffId=${prueba.staff.id}&serviceId=${prueba.service.id}`
+        );
+        ok(
+          "(6) esa cita is_test no ocupa el hueco real",
+          (disp.json?.slots ?? []).some((s) => s.startUtc === prueba.scheduledAtUtc),
+          prueba.scheduledAtUtc
+        );
+      }
+    }
+
+    const catalogo = await bot("/api/bot/catalog");
+    const entradas = (catalogo.json?.services ?? []).flatMap((s) => s.staff ?? []);
+    ok("GET /api/bot/catalog → 200", catalogo.res.status === 200, `status=${catalogo.res.status}`);
+    ok(
+      "(7) el catálogo trae singleStaff y singleService, sin teléfono",
+      catalogo.json?.singleStaff === false &&
+        catalogo.json?.singleService === false &&
+        entradas.length > 0 &&
+        entradas.every((person) => !Object.hasOwn(person, "phone")),
+      JSON.stringify({
+        singleStaff: catalogo.json?.singleStaff,
+        singleService: catalogo.json?.singleService,
+        staff: entradas.length,
+      })
+    );
+
+    const from7 = `5214637${corrida}`;
+    await decir(from7, "Lead 018 bot", "hola");
+    const conv7 = await esperarConv(from7);
+    if (conv7 && cita?.id && luzId && sole) {
+      const ambiguo = await bot(`/api/bot/availability?conversationId=${conv7.id}`);
+      ok(
+        "(7) sin servicio, con varios activos → 422 service_required",
+        ambiguo.res.status === 422 &&
+          ambiguo.json?.error?.code === "service_required" &&
+          Array.isArray(ambiguo.json?.services),
+        JSON.stringify(ambiguo.json)
+      );
+      if (tinteId) {
+        const ajeno = await bot(
+          `/api/bot/availability?conversationId=${conv7.id}&serviceId=${tinteId}&staffId=${sole.id}`
+        );
+        ok(
+          "(7) profesional que no ofrece el servicio → 422 service_not_offered",
+          ajeno.res.status === 422 && ajeno.json?.error?.code === "service_not_offered",
+          JSON.stringify(ajeno.json)
+        );
+      }
+      const oferta = await bot(
+        `/api/bot/availability?conversationId=${conv7.id}&serviceId=${cita.id}&staffId=${luzId}&limit=12&perDay=3&days=7`
+      );
+      const slots = oferta.json?.slots ?? [];
+      ok(
+        "(7) cada hueco trae staff, servicio, duración y precio",
+        slots.length > 0 &&
+          slots.every(
+            (s) =>
+              s.staffId === luzId &&
+              typeof s.staffName === "string" &&
+              s.serviceId === cita.id &&
+              s.durationMinutes === 45 &&
+              typeof s.priceCents === "number"
+          ),
+        JSON.stringify(slots[0])
+      );
+      const primero = slots[0];
+      if (primero) {
+        // La segunda conversación tiene que recibir el mismo hueco ANTES de
+        // que la primera lo reserve. Si se ofrece después, ese instante ya no
+        // está libre y la reserva responde slot_not_offered.
+        const fromB = `5214638${corrida}`;
+        await decir(fromB, "Lead 018 bot B", "hola");
+        const convB = await esperarConv(fromB);
+        if (convB) {
+          await bot(
+            `/api/bot/availability?conversationId=${convB.id}&serviceId=${cita.id}&staffId=${luzId}&limit=12&perDay=3&days=7`
+          );
+        }
+
+        const creada = await bot("/api/bot/bookings", {
+          method: "POST",
+          body: JSON.stringify({
+            conversationId: conv7.id,
+            startUtc: primero.startUtc,
+          }),
+        });
+        ok(
+          "(7) crear responde 201 con staff, servicio, duración y precio",
+          creada.res.status === 201 &&
+            creada.json?.staffId === luzId &&
+            creada.json?.staffName === EXTRA_STAFF_NAME &&
+            creada.json?.serviceName === "Cita" &&
+            creada.json?.durationMinutes === 45 &&
+            typeof creada.json?.priceCents === "number" &&
+            typeof creada.json?.currency === "string" &&
+            typeof creada.json?.bookingId === "string" &&
+            typeof creada.json?.label === "string",
+          `status=${creada.res.status} ${JSON.stringify(creada.json)}`
+        );
+        const noOfrecido = await bot("/api/bot/bookings", {
+          method: "POST",
+          body: JSON.stringify({
+            conversationId: conv7.id,
+            startUtc: new Date(Date.parse(primero.startUtc) + 60_000).toISOString(),
+          }),
+        });
+        ok(
+          "(7) 409 slot_not_offered con slots hermano",
+          noOfrecido.res.status === 409 &&
+            noOfrecido.json?.error?.code === "slot_not_offered" &&
+            Array.isArray(noOfrecido.json?.slots),
+          JSON.stringify(noOfrecido.json)
+        );
+
+        if (convB) {
+          const tarde = await bot("/api/bot/bookings", {
+            method: "POST",
+            body: JSON.stringify({
+              conversationId: convB.id,
+              startUtc: primero.startUtc,
+            }),
+          });
+          ok(
+            "(7) 409 slot_taken con slots hermano",
+            tarde.res.status === 409 &&
+              tarde.json?.error?.code === "slot_taken" &&
+              Array.isArray(tarde.json?.slots),
+            JSON.stringify(tarde.json)
+          );
+        }
+
+        const ofertaDueno = await bot(
+          `/api/bot/availability?conversationId=${conv7.id}&serviceId=${cita.id}&staffId=${sole.id}&limit=12&perDay=3&days=7`
+        );
+        const deOtro = (ofertaDueno.json?.slots ?? [])[0];
+        if (deOtro) {
+          const movida = await bot("/api/bot/bookings", {
+            method: "PATCH",
+            body: JSON.stringify({
+              conversationId: conv7.id,
+              startUtc: deOtro.startUtc,
+            }),
+          });
+          ok(
+            "(7) reprogramar con otro profesional → 409 slot_not_offered y slots hermano",
+            movida.res.status === 409 &&
+              movida.json?.error?.code === "slot_not_offered" &&
+              Array.isArray(movida.json?.slots),
+            JSON.stringify(movida.json)
+          );
+        }
+      }
+    } else {
+      ok("(7) conversación para el cerebro externo", Boolean(conv7));
+    }
+
+    if (conv7 && luzId) {
+      const dbUrl = process.env.DATABASE_URL ?? "";
+      let host = "";
+      try {
+        host = new URL(dbUrl).hostname;
+      } catch {}
+      if (["localhost", "127.0.0.1", "::1", "[::1]"].includes(host)) {
+        const { default: postgres } = await import("postgres");
+        const sql = postgres(dbUrl, { max: 1 });
+        const legacyStart = "2031-06-15T15:00:00.000Z";
+        const legacyId = `os_e2eleg${corrida}`;
+        try {
+          const rows = await sql`
+            select organization_id from conversation where id = ${conv7.id}
+          `;
+          const orgId = rows[0]?.organization_id ?? null;
+          if (orgId) {
+            await sql`
+              insert into offered_slot (
+                id, organization_id, conversation_id, start_utc, label,
+                staff_id, service_id, any_staff
+              ) values (
+                ${legacyId}, ${orgId}, ${conv7.id}, ${legacyStart},
+                ${"oferta legada"}, null, null, false
+              )
+            `;
+          }
+          const legado = orgId
+            ? await bot("/api/bot/bookings", {
+                method: "POST",
+                body: JSON.stringify({
+                  conversationId: conv7.id,
+                  startUtc: legacyStart,
+                }),
+              })
+            : null;
+          ok(
+            "(7) oferta sin staff_id en instancia multi-profesional → 409 slot_not_offered",
+            legado?.res.status === 409 &&
+              legado.json?.error?.code === "slot_not_offered" &&
+              Array.isArray(legado.json?.slots),
+            JSON.stringify(legado?.json ?? { orgId })
+          );
+        } finally {
+          await sql`delete from offered_slot where id = ${legacyId}`;
+          await sql.end({ timeout: 5 });
+        }
+      }
+    }
+
+    const fromDown = `5214639${corrida}`;
+    await decir(fromDown, "Lead 018 caido", "simula proveedor caido");
+    const convDown = await esperarConv(fromDown);
+    if (convDown) {
+      const escalo = await hasta(async () => {
+        const cs = (await api("/api/conversations")).json?.conversations ?? [];
+        return cs.find((c) => c.id === convDown.id)?.handoffReason === "error";
+      });
+      const citas = await citasDe(convDown.id);
+      ok(
+        "proveedor de IA caído: el turno escala y no reserva",
+        escalo && citas.length === 0,
+        `escalo=${escalo} citas=${citas.length}`
+      );
+    } else {
+      ok("proveedor de IA caído: el turno escala y no reserva", false, "sin conversación");
+    }
+  } finally {
+    await retirarExtrasAgenda();
+    if (!estaba) {
+      await api("/api/agent/profile", {
+        method: "PUT",
+        body: JSON.stringify({ enabled: false }),
+      });
+    }
+  }
+}
 
 /* ============================================================
  * 016 — Atribución de anuncios y Conversions API (tests/e2e/us-atribucion.md)
@@ -3132,3 +3704,8 @@ async function aislamientoChecks() {
     }
   }
 }
+
+main().catch((err) => {
+  console.error("ERROR FATAL:", err);
+  process.exit(1);
+});

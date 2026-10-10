@@ -5,7 +5,8 @@ import { scoped } from "@/lib/db/tenant";
 import { requireBotKey, resolveInstanceOrg } from "@/server/bot/auth";
 import { agendaDisabledResponse, agendaEnabled } from "@/server/agenda/flag";
 import { computeAvailability } from "@/server/agenda/availability";
-import { resolveAvailabilityTarget } from "@/server/agenda/default-staff";
+import { listActiveServices } from "@/server/agenda/default-staff";
+import { AgendaHttpError, agendaErrorResponse } from "@/server/agenda/http";
 import { getSettings } from "@/server/agenda/settings";
 import { daysWithAgenda, spreadByDay } from "@/server/agenda/spread";
 import { replaceOffers } from "@/server/agenda/offers";
@@ -76,25 +77,42 @@ export async function GET(req: Request) {
 
   const settings = await getSettings(organizationId);
   const now = new Date();
-  const target = await resolveAvailabilityTarget(organizationId);
-  if (!target.ok) {
-    return Response.json(
-      {
-        error: {
-          code: "service_required",
-          message: "Hay que elegir profesional y servicio",
+  const requestedService = url.searchParams.get("serviceId");
+  const requestedStaff = url.searchParams.get("staffId");
+  const staffId = !requestedStaff || requestedStaff === "any" ? "any" : requestedStaff;
+
+  let serviceId = requestedService;
+  if (!serviceId) {
+    const services = await listActiveServices(organizationId);
+    const only = services.length === 1 ? services[0] : undefined;
+    if (!only) {
+      return Response.json(
+        {
+          error: {
+            code: "service_required",
+            message: "Hay que elegir profesional y servicio",
+          },
+          services,
         },
-        services: target.services,
-      },
-      { status: 422 }
-    );
+        { status: 422 }
+      );
+    }
+    serviceId = only.id;
   }
-  const all = await computeAvailability(organizationId, {
-    settings,
-    now,
-    staffId: target.staffId,
-    serviceId: target.serviceId,
-  });
+
+  let all;
+  try {
+    all = await computeAvailability(organizationId, {
+      settings,
+      now,
+      staffId,
+      serviceId,
+    });
+  } catch (err) {
+    if (err instanceof AgendaHttpError) return agendaErrorResponse(err);
+    throw err;
+  }
+  const anyStaff = staffId === "any";
   const slots = spreadByDay(all, {
     timezone: settings.timezone,
     limit,
@@ -106,7 +124,15 @@ export async function GET(req: Request) {
   await replaceOffers(
     organizationId,
     conversationId,
-    slots.map((s) => ({ startUtc: s.startUtc, label: s.label }))
+    slots.map((s) => ({
+      startUtc: s.startUtc,
+      label: s.label,
+      staffId: s.staffId ?? null,
+      serviceId,
+      durationMinutes: s.durationMinutes ?? null,
+      anyStaff,
+      staffName: anyStaff ? null : (s.staffName ?? null),
+    }))
   );
 
   return Response.json({
@@ -117,6 +143,11 @@ export async function GET(req: Request) {
       dayIso: s.dayIso,
       dayLabel: s.dayLabel,
       time: s.time,
+      staffId: s.staffId ?? null,
+      staffName: s.staffName ?? null,
+      serviceId,
+      durationMinutes: s.durationMinutes ?? null,
+      priceCents: s.priceCents ?? null,
     })),
     // Los días que NO están aquí no tienen agenda: es la lista que evita que
     // el modelo invente un jueves que el negocio tiene cerrado.

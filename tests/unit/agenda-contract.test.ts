@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { agentActionSchema } from "@/server/ai/actions";
+import { buildAgentSystemPrompt } from "@/server/ai/prompts";
+import type { OfferedSlot } from "@/server/agenda/offers";
 import {
   bookingErrorResponse,
   bookingErrorStatus,
@@ -96,5 +99,99 @@ describe("la agenda apagada", () => {
     const res = agendaDisabledResponse();
     // 404 y no 403: un 403 confirmaría que la agenda existe pero está vedada.
     expect(res.status).toBe(404);
+  });
+});
+
+const profile = {
+  id: "ap_1",
+  organizationId: "org_1",
+  enabled: false,
+  name: "Asistente",
+  tone: null,
+  instructions: null,
+  escalationRules: null,
+  greeting: null,
+  createdAt: new Date(0),
+  updatedAt: new Date(0),
+};
+
+const catalog = {
+  services: [
+    {
+      name: "Corte clásico",
+      durationMinutes: 30,
+      priceCents: 15000,
+      currency: "MXN",
+      staff: [{ displayName: "Ana Catalogo", jobTitle: "barbero" }],
+    },
+  ],
+};
+
+describe("esquema y prompt del agente", () => {
+  it("con la bandera apagada el esquema no acepta la agenda", () => {
+    const off = agentActionSchema(false);
+    expect(off.safeParse({ action: "offer_slots", service: "Corte", staff: "Ana" }).success).toBe(
+      false
+    );
+    expect(off.safeParse({ action: "book_slot", startUtc: "2026-08-05T15:00:00.000Z" }).success).toBe(
+      false
+    );
+    expect(off.safeParse({ action: "reply", text: "hola" }).success).toBe(true);
+  });
+
+  it("offer_slots gana service y staff opcionales; book_slot no cambia de entrada", () => {
+    const on = agentActionSchema(true);
+    expect(on.safeParse({ action: "offer_slots" }).success).toBe(true);
+    expect(
+      on.safeParse({ action: "offer_slots", service: "Corte clásico", staff: "Ana", reply: "hola" })
+        .success
+    ).toBe(true);
+    const booked = on.safeParse({
+      action: "book_slot",
+      startUtc: "2026-08-05T15:00:00.000Z",
+      reply: "ok",
+    });
+    expect(booked.success).toBe(true);
+    if (booked.success && booked.data.action === "book_slot") {
+      expect(booked.data).toEqual({
+        action: "book_slot",
+        startUtc: "2026-08-05T15:00:00.000Z",
+        reply: "ok",
+      });
+    }
+  });
+
+  it("con la bandera apagada el prompt no gasta tokens de agenda ni de catálogo", () => {
+    const off = buildAgentSystemPrompt({
+      profile,
+      kb: [],
+      stages: [{ name: "Nuevo" }],
+      agenda: false,
+      catalog,
+    });
+    expect(off).not.toContain("offer_slots");
+    expect(off).not.toContain("book_slot");
+    expect(off).not.toContain("Ana Catalogo");
+    expect(off).not.toContain("Corte clásico");
+    expect(off).not.toContain("Catálogo de la agenda");
+  });
+
+  it("OfferedSlot lleva profesional, servicio, duración y cualquiera", () => {
+    const slot: OfferedSlot = {
+      startUtc: "2026-09-07T15:00:00.000Z",
+      label: "lun 7 sep, 09:00",
+      staffId: "st_1",
+      serviceId: "sv_1",
+      durationMinutes: 45,
+      anyStaff: false,
+      staffName: "Ana",
+    };
+    expect(slot).toMatchObject({
+      staffId: "st_1",
+      serviceId: "sv_1",
+      durationMinutes: 45,
+      anyStaff: false,
+      staffName: "Ana",
+    });
   });
 });

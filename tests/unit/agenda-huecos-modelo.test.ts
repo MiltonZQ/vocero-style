@@ -61,4 +61,30 @@ describe("mapaDeHuecosParaModelo", () => {
     expect(mapa.split("\n")).toHaveLength(2);
     expect(mapa).toContain("→ 2026-09-07T15:00:00.000Z");
   });
+
+  it("añade · profesional solo cuando el hueco trae staffName", () => {
+    const mapa = mapaDeHuecosParaModelo([
+      {
+        startUtc: "2026-09-07T15:00:00.000Z",
+        label: "lun 7 sep, 09:00",
+        staffId: "st_jose",
+        serviceId: "sv_corte",
+        durationMinutes: 45,
+        anyStaff: false,
+        staffName: "José",
+      },
+      {
+        startUtc: "2026-09-07T17:00:00.000Z",
+        label: "lun 7 sep, 11:00",
+        staffId: "st_ana",
+        serviceId: "sv_corte",
+        durationMinutes: 45,
+        anyStaff: true,
+        staffName: null,
+      },
+    ])!;
+    expect(mapa).toContain('- "lun 7 sep, 09:00 · José" → 2026-09-07T15:00:00.000Z');
+    expect(mapa).toContain('- "lun 7 sep, 11:00" → 2026-09-07T17:00:00.000Z');
+    expect(mapa).not.toContain("11:00 ·");
+  });
 });

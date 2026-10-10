@@ -11,7 +11,21 @@ import { scoped } from "@/lib/db/tenant";
  * en cada ronda (la vigente es siempre la última) y se limpia al reservar.
  */
 
-export type OfferedSlot = { startUtc: string; label: string };
+export type OfferedSlot = {
+  startUtc: string;
+  label: string;
+  /** NULL en filas anteriores a la 018. */
+  staffId?: string | null;
+  serviceId?: string | null;
+  durationMinutes?: number | null;
+  /** true ⇒ el cliente pidió cualquiera y se puede reasignar una vez. */
+  anyStaff?: boolean;
+  /**
+   * Solo para el mapa que ve el modelo. No es columna: se llena al leer si
+   * el profesional fue nombrado.
+   */
+  staffName?: string | null;
+};
 
 /** Reemplaza TODA la oferta de la conversación, en una transacción. */
 export async function replaceOffers(
@@ -38,6 +52,10 @@ export async function replaceOffers(
         conversationId,
         startUtc: new Date(s.startUtc),
         label: s.label,
+        staffId: s.staffId ?? null,
+        serviceId: s.serviceId ?? null,
+        durationMinutes: s.durationMinutes ?? null,
+        anyStaff: s.anyStaff ?? false,
       }))
     );
   });
@@ -52,8 +70,14 @@ export async function getOffers(
     .select({
       startUtc: schema.offeredSlot.startUtc,
       label: schema.offeredSlot.label,
+      staffId: schema.offeredSlot.staffId,
+      serviceId: schema.offeredSlot.serviceId,
+      durationMinutes: schema.offeredSlot.durationMinutes,
+      anyStaff: schema.offeredSlot.anyStaff,
+      staffName: schema.staff.displayName,
     })
     .from(schema.offeredSlot)
+    .leftJoin(schema.staff, eq(schema.offeredSlot.staffId, schema.staff.id))
     .where(
       scoped(
         schema.offeredSlot.organizationId,
@@ -66,6 +90,12 @@ export async function getOffers(
   return rows.map((r) => ({
     startUtc: r.startUtc.toISOString(),
     label: r.label,
+    staffId: r.staffId,
+    serviceId: r.serviceId,
+    durationMinutes: r.durationMinutes,
+    anyStaff: r.anyStaff,
+    // Con "cualquiera" el modelo no ve un nombre: el cliente no eligió persona.
+    staffName: r.anyStaff ? null : r.staffName,
   }));
 }
 
@@ -141,6 +171,9 @@ export function mapaDeHuecosParaModelo(ofertas: OfferedSlot[]): string | null {
   if (ofertas.length === 0) return null;
   return [
     CABECERA_HUECOS,
-    ...ofertas.map((o) => `- "${o.label}" → ${o.startUtc}`),
+    ...ofertas.map((o) => {
+      const label = o.staffName ? `${o.label} · ${o.staffName}` : o.label;
+      return `- "${label}" → ${o.startUtc}`;
+    }),
   ].join("\n");
 }

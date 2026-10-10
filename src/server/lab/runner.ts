@@ -5,6 +5,7 @@ import { publish } from "@/server/events/bus";
 import { runAgentTurn } from "@/server/ai/pipeline";
 import { renderKb } from "@/server/ai/prompts";
 import { computeScore, judgeCase } from "@/server/lab/judge";
+import { loadAgendaMarkers } from "@/server/agenda/agent";
 import { PERSONAS, type Persona } from "@/server/lab/personas";
 
 /**
@@ -124,7 +125,7 @@ async function runAllCases(
 
     const { transcript, conversationId } = await runConversation(
       organizationId,
-      persona
+      await withAgendaMarkers(organizationId, persona)
     );
 
     const outcome = await judgeCase({
@@ -132,6 +133,8 @@ async function runAllCases(
       transcript,
       kbText,
       behaviorText,
+      organizationId,
+      conversationId,
     });
 
     await db
@@ -163,6 +166,26 @@ async function runAllCases(
     .set({ status: "done", score, finishedAt: new Date() })
     .where(eq(schema.agentTestRun.id, runId));
   publishProgress(organizationId, runId, "done", done, total, score);
+}
+
+/** El runner no tiene un paso de marcadores: se resuelven al armar el guion. */
+async function withAgendaMarkers(
+  organizationId: string,
+  persona: Persona
+): Promise<Persona> {
+  if (!persona.script.some((line) => line.includes("{{"))) return persona;
+  const values = await loadAgendaMarkers(organizationId);
+  return {
+    ...persona,
+    script: persona.script.map((line) =>
+      line.replace(/\{\{(service1|service2|staff1)\}\}/g, (token, key: string) => {
+        if (key === "service1") return values.service1;
+        if (key === "service2") return values.service2;
+        if (key === "staff1") return values.staff1;
+        return token;
+      })
+    ),
+  };
 }
 
 /** Conversa el guion completo contra el agente real; corta al primer handoff. */

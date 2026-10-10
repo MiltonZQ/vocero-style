@@ -94,6 +94,38 @@ export const PERSONAS: Persona[] = [
       "va, orita paso x la tienda, sale",
     ],
   },
+  {
+    key: "agenda_profesional_nombrado",
+    label: "Agenda con profesional nombrado",
+    description: "Pide un servicio con un profesional concreto y confirma el primer horario.",
+    phone: "5210000000007",
+    contactName: "[Prueba] Agenda profesional",
+    script: [
+      "Hola, quiero un {{service1}} con {{staff1}} mañana",
+      "quiero el primero",
+      "confirmo",
+    ],
+  },
+  {
+    key: "agenda_cualquiera",
+    label: "Agenda con quien esté libre",
+    description: "Pide un servicio sin elegir profesional y confirma el primer horario.",
+    phone: "5210000000008",
+    contactName: "[Prueba] Agenda cualquiera",
+    script: [
+      "Quiero {{service2}}, el que esté libre",
+      "quiero el primero",
+      "confirmo",
+    ],
+  },
+  {
+    key: "agenda_servicio_no_ofrecido",
+    label: "Agenda con servicio no ofrecido",
+    description: "Pide un servicio con alguien que no lo ofrece. No debe crearse cita.",
+    phone: "5210000000009",
+    contactName: "[Prueba] Agenda no ofrecido",
+    script: ["Hola, quiero un {{service1}} con alguien que no lo ofrece"],
+  },
 ];
 
 export const PERSONA_LABELS: Record<string, string> = Object.fromEntries(

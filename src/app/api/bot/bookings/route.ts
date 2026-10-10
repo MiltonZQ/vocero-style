@@ -1,12 +1,12 @@
+import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { apiError, parseBody } from "@/lib/api";
+import { getDb, schema } from "@/lib/db";
+import { scoped } from "@/lib/db/tenant";
 import { requireBotKey, resolveInstanceOrg } from "@/server/bot/auth";
+import { bookFromOffer } from "@/server/agenda/agent";
 import { agendaDisabledResponse, agendaEnabled } from "@/server/agenda/flag";
-import { resolveAvailabilityTarget } from "@/server/agenda/default-staff";
-import {
-  createSessionBooking,
-  rescheduleForConversation,
-} from "@/server/agenda/service";
+import { rescheduleForConversation } from "@/server/agenda/service";
 import { bookingErrorResponse, bookingPayload } from "@/server/agenda/http";
 
 export const dynamic = "force-dynamic";
@@ -42,36 +42,47 @@ export async function POST(req: Request) {
   const body = await parseBody(req, createSchema);
   if (!body.ok) return body.response;
 
-  const target = await resolveAvailabilityTarget(gate.organizationId);
-  if (!target.ok) {
-    return Response.json(
-      {
-        error: {
-          code: "service_required",
-          message: "Hay que elegir profesional y servicio",
-        },
-        services: target.services,
-      },
-      { status: 422 }
-    );
-  }
-
   try {
-    const result = await createSessionBooking({
+    const result = await bookFromOffer({
       organizationId: gate.organizationId,
       conversationId: body.data.conversationId,
       startUtc: body.data.startUtc,
       notes: body.data.notes ?? null,
-      source: "ai",
-      // La regla innegociable: el agente solo reserva lo que ya ofreció.
-      requireOffer: true,
-      staffId: target.staffId,
-      serviceId: target.serviceId,
     });
-    return Response.json(bookingPayload(result), { status: 201 });
+    const serviceName = await lookupServiceName(
+      gate.organizationId,
+      result.booking.serviceId
+    );
+    return Response.json(
+      {
+        ...bookingPayload(result),
+        staffId: result.booking.staffId,
+        staffName: result.staffName,
+        serviceName,
+        durationMinutes: result.booking.durationMinutes,
+        priceCents: result.booking.priceCents,
+        currency: result.booking.currency,
+      },
+      { status: 201 }
+    );
   } catch (err) {
     return bookingErrorResponse(err);
   }
+}
+
+async function lookupServiceName(
+  organizationId: string,
+  serviceId: string | null
+): Promise<string | null> {
+  if (!serviceId) return null;
+  const rows = await getDb()
+    .select({ name: schema.service.name })
+    .from(schema.service)
+    .where(
+      scoped(schema.service.organizationId, organizationId, eq(schema.service.id, serviceId))
+    )
+    .limit(1);
+  return rows[0]?.name ?? null;
 }
 
 export async function PATCH(req: Request) {
