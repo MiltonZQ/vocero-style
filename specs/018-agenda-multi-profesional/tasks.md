@@ -62,10 +62,10 @@ cookies por usuario (hoy `scripts/e2e-selftest.mjs` usa una cookie global).
 
 **Slice**: 1 (T001, T002) · 2 (T003)
 
-- [ ] T001 Registrar los prefijos de id `staff: "st"` y `service: "sv"` en
+- [X] T001 Registrar los prefijos de id `staff: "st"` y `service: "sv"` en
       `src/lib/db/ids.ts` (no chocan con `stg_`; `staff_service` y
       `staff_photo` usan clave natural, sin prefijo)
-- [ ] T002 [P] Crear `tests/unit/helpers/ephemeral-db.ts`: abre una BD
+- [X] T002 [P] Crear `tests/unit/helpers/ephemeral-db.ts`: abre una BD
       Postgres efímera desde `TEST_DATABASE_URL` (esquema aislado por corrida),
       aplica `drizzle/*.sql` en orden con `postgres`, expone `run(sql)` y
       `dropAll()`, y exporta `describeDb` = `describe.skipIf(!process.env.TEST_DATABASE_URL)`
@@ -91,7 +91,7 @@ actor (deny-by-default). Sin esto ninguna historia puede ser correcta.
 
 ### Tests primero (deben fallar antes de implementar)
 
-- [ ] T004 [P] Crear `tests/unit/migration-0014.test.ts` (`describeDb`, usa
+- [X] T004 [P] Crear `tests/unit/migration-0014.test.ts` (`describeDb`, usa
       T002) con tres casos del data-model: (a) BD con 1 org, N sesiones
       legadas y un par solapado parcial → migra sin error, toda sesión con
       `staff_id`/`service_id`, el par con `legacy_overlap = true`, bloqueos
@@ -101,7 +101,7 @@ actor (deny-by-default). Sin esto ninguna historia puede ser correcta.
       SQLSTATE `23P01`, adyacentes `[10:00,10:30)`/`[10:30,11:00)` pasan, dos
       profesionales distintos pasan, una `is_test` y una `cancelada` no
       ocupan. Debe fallar (no existe `0014`)
-- [ ] T005 [P] Crear `tests/unit/booking-conflict.test.ts`: `isSlotConflict(err)`
+- [X] T005 [P] Crear `tests/unit/booking-conflict.test.ts`: `isSlotConflict(err)`
       es verdadero para `{ code: "23505" }` y `{ code: "23P01" }` (también
       envuelto en `err.cause`), falso para otros códigos y para no-errores;
       verifica que `BookingError("slot_taken")` es lo que se propaga. Debe
@@ -142,7 +142,7 @@ actor (deny-by-default). Sin esto ninguna historia puede ser correcta.
 
 ### Slice 1 — esquema, migración, backfill, constraint
 
-- [ ] T010 Agregar a `src/lib/db/schema.ts` las tablas `staff`, `staffPhoto`
+- [X] T010 Agregar a `src/lib/db/schema.ts` las tablas `staff`, `staffPhoto`
       (con `customType` `bytea` de Drizzle, `size_bytes` CHECK ≤ 524288),
       `service` (CHECK `duration_minutes` 5–600, `price_cents ≥ 0`,
       `currency` 3 letras) y `staffService` (PK compuesta `(staff_id,
@@ -150,7 +150,7 @@ actor (deny-by-default). Sin esto ninguna historia puede ser correcta.
       índices `staff_org_active_idx`, `staff_member_uq` (UNIQUE parcial donde
       `member_id IS NOT NULL`), `staff_photo_org_idx`, `service_org_active_idx`,
       `staff_service_org_service_idx`, exactamente como data-model.md
-- [ ] T011 Editar en `src/lib/db/schema.ts` `booking` (`staff_id`, `service_id`
+- [X] T011 Editar en `src/lib/db/schema.ts` `booking` (`staff_id`, `service_id`
       FK `RESTRICT`, `price_cents`, `currency`, `legacy_overlap` boolean default
       false, `ends_at` como `customType` de columna GENERADA que Drizzle no
       escribe) y `offered_slot` (`staff_id`, `service_id` FK `CASCADE`,
@@ -158,7 +158,7 @@ actor (deny-by-default). Sin esto ninguna historia puede ser correcta.
       agregar `booking_org_staff_when_idx (organization_id, staff_id,
       scheduled_at)`; comentario de intención: el `EXCLUDE` y el CHECK viven solo
       en el SQL (invisibles para `db:generate`)
-- [ ] T012 Generar `drizzle/0014_agenda_multi_profesional.sql` con `pnpm
+- [X] T012 Generar `drizzle/0014_agenda_multi_profesional.sql` con `pnpm
       db:generate` (para `drizzle/meta/_journal.json` y
       `drizzle/meta/0014_snapshot.json`) y **editarla a mano** como la `0009`:
       comentario inicial con el rollback (recrear el índice único viejo);
@@ -167,7 +167,7 @@ actor (deny-by-default). Sin esto ninguna historia puede ser correcta.
       COLUMN IF NOT EXISTS` incluyendo `ends_at timestamp GENERATED ALWAYS AS
       (scheduled_at + duration_minutes * interval '1 minute') STORED`; columnas
       de `offered_slot`
-- [ ] T013 Completar `drizzle/0014_agenda_multi_profesional.sql` con el
+- [X] T013 Completar `drizzle/0014_agenda_multi_profesional.sql` con el
       **backfill** re-ejecutable (cada INSERT/UPDATE con `NOT EXISTS`/`IS NULL`):
       (a) un `staff` por organización sin ninguno (nombre del usuario `owner` o
       de la organización); (b) un `service` «Cita»
@@ -178,7 +178,7 @@ actor (deny-by-default). Sin esto ninguna historia puede ser correcta.
       'session' AND staff_id IS NULL` (los bloqueos legados quedan `staff_id NULL`
       = del local); (d) `legacy_overlap = true` para sesiones activas legadas que
       solapan con una anterior del mismo profesional
-- [ ] T014 Completar `drizzle/0014_agenda_multi_profesional.sql` con los
+- [X] T014 Completar `drizzle/0014_agenda_multi_profesional.sql` con los
       constraints en DO-blocks idempotentes: CHECK
       `booking_session_has_staff_service (kind = 'block' OR (staff_id IS NOT NULL
       AND service_id IS NOT NULL))` y `EXCLUDE USING gist (staff_id WITH =,
@@ -186,22 +186,22 @@ actor (deny-by-default). Sin esto ninguna historia puede ser correcta.
       status IN ('agendada','realizada') AND NOT is_test AND NOT legacy_overlap)`
       llamado `booking_staff_no_overlap`; luego `DROP INDEX IF EXISTS
       booking_org_active_slot_uq;` y crear `booking_org_staff_when_idx`
-- [ ] T015 Aplicar `0014` con `pnpm db:migrate` dos veces sobre la BD local
+- [X] T015 Aplicar `0014` con `pnpm db:migrate` dos veces sobre la BD local
       (con datos de la 015) y poner en verde `tests/unit/migration-0014.test.ts`
       con `TEST_DATABASE_URL`; correr las consultas de comprobación del
       quickstart §2 (1 staff y 1 service por organización, 0 sesiones sin
       staff/service). Depende de T012–T014
-- [ ] T016 Editar `src/server/auth/on-signup.ts` para sembrar, en la
+- [X] T016 Editar `src/server/auth/on-signup.ts` para sembrar, en la
       organización nueva, el `staff` por defecto (nombre del dueño, `active`,
       `position 0`) y el `service` «Cita» con su `staff_service`, idempotente y
       convergente con el backfill de la migración
-- [ ] T017 Editar `src/server/agenda/service.ts`: exportar `isSlotConflict(err)`
+- [X] T017 Editar `src/server/agenda/service.ts`: exportar `isSlotConflict(err)`
       (`23505` | `23P01`, incluyendo `err.cause`) y usarla donde hoy se detecta
       `23505` — `createSessionBooking`, `rescheduleBooking`,
       `rescheduleForConversation` y la reactivación en `markBookingStatus` —
       traduciendo a `BookingError("slot_taken")`; pone en verde
       `tests/unit/booking-conflict.test.ts`
-- [ ] T018 Editar `src/server/agenda/service.ts` (`createSessionBooking`,
+- [X] T018 Editar `src/server/agenda/service.ts` (`createSessionBooking`,
       `createBlock`) y `src/server/agenda/availability.ts`: **compatibilidad
       temporal** para que la 015 siga funcionando con el CHECK nuevo — si el
       input no trae `staffId`/`serviceId`, resolver el único `staff` activo y el
