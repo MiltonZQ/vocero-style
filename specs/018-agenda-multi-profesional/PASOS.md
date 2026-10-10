@@ -41,8 +41,8 @@ verde. Con `AGENDA` apagada no se ve nada nuevo.
 - [x] **1. Esquema, migración, constraint y backfill** (T001, T002, T004,
   T005, T010–T019). Tablas nuevas, `drizzle/0014_agenda_multi_profesional.sql`,
   siembra al registrarse, `isSlotConflict`. Commits `9368820`…`e2fe439`.
-  Pendiente: T019 (E2E).
-- [ ] **2. Roles, `requireActor`, scoping y gate de aislamiento** (T003,
+  T019 (E2E) cerrado en la Slice 2 (`pnpm test:e2e:local`).
+- [x] **2. Roles, `requireActor`, scoping y gate de aislamiento** (T003,
   T006–T009, T020–T030, T063, T070, T071). `roles.ts`, `actor.ts`, `scope.ts`,
   `withAuth` con denegación por defecto, SSE filtrado, `GET /api/me`, checks E2E
   de aislamiento primero en rojo.

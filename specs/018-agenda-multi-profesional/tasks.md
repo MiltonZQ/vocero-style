@@ -71,7 +71,7 @@ cookies por usuario (hoy `scripts/e2e-selftest.mjs` usa una cookie global).
       `dropAll()`, y exporta `describeDb` = `describe.skipIf(!process.env.TEST_DATABASE_URL)`
       (sin la variable los tests de BD se omiten; el resto del repo no usa BD en
       unit). Revisar `tests/unit/booking-race.test.ts` para no duplicar patrón
-- [ ] T003 [P] Refactorizar `api()` y `bot()` de `scripts/e2e-selftest.mjs`
+- [X] T003 [P] Refactorizar `api()` y `bot()` de `scripts/e2e-selftest.mjs`
       para aceptar un *jar* de cookies explícito (`newJar()`, `login(jar, email,
       password)`, `api(path, { jar, ... })`): sin `jar` se comporta EXACTO como
       hoy (cookie global `cookie`), de modo que `main()` y `agendaChecks()` no
@@ -106,25 +106,25 @@ actor (deny-by-default). Sin esto ninguna historia puede ser correcta.
       envuelto en `err.cause`), falso para otros códigos y para no-errores;
       verifica que `BookingError("slot_taken")` es lo que se propaga. Debe
       fallar (la función aún no existe)
-- [ ] T006 [P] Crear `tests/unit/roles.test.ts`: `normalizeRole("member")`
+- [X] T006 [P] Crear `tests/unit/roles.test.ts`: `normalizeRole("member")`
       → `"reception"`; `owner|reception|staff` pasan; `null`/`undefined`/valor
       desconocido → `null` (sin acceso, nunca owner por defecto); `can(role,
       capability)` cubre la matriz de data-model.md (calendario global, catálogo,
       equipo, horarios, bandeja, SSE). Debe fallar
-- [ ] T007 [P] Crear `tests/unit/scope.test.ts`: `bookingScope(actor)` devuelve
+- [X] T007 [P] Crear `tests/unit/scope.test.ts`: `bookingScope(actor)` devuelve
       el predicado esperado — owner/reception: sin filtro extra; staff: `staff_id
       = actor.staffId OR (kind='block' AND staff_id IS NULL)`; staff con
       `staffId = null` → predicado vacío (no ve nada, FR-006); `assertCanWriteBooking`
       permite escribir lo propio y lanza `OutOfScopeError` para lo ajeno y para
       `kind='block'` del local; `denyOutOfScope()` produce `404 not_found` sin
       cuerpo con datos. Debe fallar
-- [ ] T008 [P] Crear `tests/unit/with-auth-staff.test.ts`: `withAuth(handler)`
+- [X] T008 [P] Crear `tests/unit/with-auth-staff.test.ts`: `withAuth(handler)`
       sin opciones responde `403 forbidden` a un actor `staff` y no invoca el
       handler; con `{ allowStaff: true }` lo invoca; `{ roles: ["owner"] }`
       responde 403 a `reception`; sin sesión → 401; cuenta con perfil desactivado
       → `403 account_disabled`; `member` legado se trata como `reception`.
       Mockear `requireActor`. Debe fallar
-- [ ] T009 Escribir en `scripts/e2e-selftest.mjs` el esqueleto de
+- [X] T009 Escribir en `scripts/e2e-selftest.mjs` el esqueleto de
       `aislamientoChecks()` **en rojo** y enchufarlo tras `agendaChecks()`: helper
       `sembrarEquipo()` que, con la jar del dueño, crea dos cuentas de equipo con
       `POST /api/settings/team {role:"staff"}` y las vincula a dos filas `staff`
@@ -209,18 +209,18 @@ actor (deny-by-default). Sin esto ninguna historia puede ser correcta.
       service_required`), copiar `duration_minutes`, `price_cents` y `currency`
       del catálogo, y filtrar `computeAvailability`/`findSlot` por ese
       `staff_id`. Comentario `// TEMPORAL (018 US2): se reemplaza por selección explícita`
-- [ ] T019 Checkpoint Slice 1: `pnpm typecheck && pnpm lint && pnpm test` y
+- [X] T019 Checkpoint Slice 1: `pnpm typecheck && pnpm lint && pnpm test` y
       `pnpm test:e2e` con `AGENDA=on`: `agendaChecks()` de la 015 verde sin
       tocarla (SC-006) con la BD ya migrada. `aislamientoChecks()` sigue en rojo
       (esperado)
 
 ### Slice 2 — roles, actor, scope, deny-by-default
 
-- [ ] T020 Crear `src/lib/auth/roles.ts`: `type Role = "owner" | "reception" |
+- [X] T020 Crear `src/lib/auth/roles.ts`: `type Role = "owner" | "reception" |
       "staff"`, `normalizeRole(raw)` (`"member"` → `"reception"`, desconocido →
       `null`) y `can(role, capability)` con la matriz de data-model.md; pone en
       verde `tests/unit/roles.test.ts`
-- [ ] T021 Crear `src/lib/auth/actor.ts`: `requireActor()` →
+- [X] T021 Crear `src/lib/auth/actor.ts`: `requireActor()` →
       `{ userId, organizationId, role, staffId | null }` (resuelve `member.role`
       con `normalizeRole`, y para `staff` busca `staff.member_id = member.id`);
       errores `ForbiddenError` y `AccountDisabledError` (perfil `active=false` o
@@ -228,45 +228,45 @@ actor (deny-by-default). Sin esto ninguna historia puede ser correcta.
       páginas (redirige a `/my-agenda` si staff, a `/inbox` si no autorizado).
       Reexportar tipos desde `src/lib/auth/session.ts` sin cambiar
       `requireSession`
-- [ ] T022 Crear `src/server/agenda/scope.ts`: `bookingScope(actor)`
+- [X] T022 Crear `src/server/agenda/scope.ts`: `bookingScope(actor)`
       (compone con `scoped()` de `src/lib/db/tenant.ts`, no lo sustituye),
       `assertCanWriteBooking(actor, booking)`, `OutOfScopeError`,
       `denyOutOfScope()` (→ `404 not_found` sin datos). Pone en verde
       `tests/unit/scope.test.ts`
-- [ ] T023 Editar `src/lib/api.ts`: `withAuth(handler, opts?)` con
+- [X] T023 Editar `src/lib/api.ts`: `withAuth(handler, opts?)` con
       `opts = { roles?: Role[]; allowStaff?: boolean }` — resuelve
       `requireActor()`, **`staff` denegado por defecto** (`403 forbidden`) salvo
       `allowStaff`, `roles` restringe además a owner/reception, `403
       account_disabled` para cuentas sin acceso; el handler recibe la sesión
       más el `actor`. Las ~40 rutas existentes quedan cerradas sin editarlas.
       Pone en verde `tests/unit/with-auth-staff.test.ts`
-- [ ] T024 Editar `src/lib/auth/index.ts`: hook `before` de Better Auth que
+- [X] T024 Editar `src/lib/auth/index.ts`: hook `before` de Better Auth que
       rechaza (`403`) las mutaciones de `/organization/*` cuando el usuario es
       `staff` (defensa en profundidad, research D5)
-- [ ] T025 Editar `src/app/api/settings/team/route.ts`: el POST acepta `role`
+- [X] T025 Editar `src/app/api/settings/team/route.ts`: el POST acepta `role`
       (`"reception" | "staff"`, por defecto `"reception"`; `owner` no se puede
       crear por aquí); un `staff` creado sin perfil vinculado sigue siendo válido
       (no ve nada, FR-006)
-- [ ] T026 Crear `src/app/api/me/route.ts` (`GET`, `allowStaff: true`):
+- [X] T026 Crear `src/app/api/me/route.ts` (`GET`, `allowStaff: true`):
       `{ user: {id,name,email}, role, staffId, agendaEnabled }`. Evalúa la
       bandera sin devolver 404 (informa `agendaEnabled:false`); no es fuente de
       autorización
-- [ ] T027 [P] Crear `src/lib/agenda-roles-ui.ts`: mapa rol → entradas de
+- [X] T027 [P] Crear `src/lib/agenda-roles-ui.ts`: mapa rol → entradas de
       navegación (compartido servidor/cliente): owner/reception ven todo +
       «Calendario»; staff solo «Mi agenda» y «Mi perfil»; todo detrás de
       `agendaEnabled`
-- [ ] T028 Cerrar las páginas existentes con `guardPage(actor,
+- [X] T028 Cerrar las páginas existentes con `guardPage(actor,
       ["owner","reception"])` (una línea por archivo): `src/app/(app)/inbox/page.tsx`,
       `src/app/(app)/contacts/page.tsx`, `src/app/(app)/pipeline/page.tsx`,
       `src/app/(app)/agent/page.tsx`, `src/app/(app)/lab/page.tsx`,
       `src/app/(app)/bookings/page.tsx` y `src/app/(app)/settings/layout.tsx`
       (cubre todas las páginas de ajustes)
-- [ ] T029 Crear `tests/unit/no-direct-booking-reads.test.ts`: vigilancia que
+- [X] T029 Crear `tests/unit/no-direct-booking-reads.test.ts`: vigilancia que
       falla si algún archivo fuera de `src/server/agenda/` importa `booking` de
       `@/lib/db/schema` para consultarla (`rg`-style sobre el árbol); la
       excepción documentada es `scripts/seed/demo.ts`. Se corrige en
       T060/T113 si hoy hay violaciones (`bot`, `ai`, `lab`)
-- [ ] T030 Checkpoint Slice 2: `pnpm typecheck && pnpm lint && pnpm test`;
+- [X] T030 Checkpoint Slice 2: `pnpm typecheck && pnpm lint && pnpm test`;
       `aislamientoChecks()` — las verificaciones (4) superficies vedadas, (5)
       cuenta sin perfil/desactivada y (9) bandera apagada en VERDE; la (1)
       lectura cruzada sigue en rojo hasta US3. Registrar en el mensaje del
@@ -508,7 +508,7 @@ equipo ni ajustes.
       `id`**, sin `conversationId`, sin citas ajenas; el bloqueo del local se ve
       como `{ kind:"block", staff:null, notes }`; owner/reception ven todo. Debe
       fallar
-- [ ] T063 [P] [US3] Crear `tests/unit/events-filter.test.ts`: el filtro de
+- [X] T063 [P] [US3] Crear `tests/unit/events-filter.test.ts`: el filtro de
       SSE por rol — owner/reception reciben todo; staff recibe solo
       `booking.updated` con `staffId` propio o `scope:"shop"`; staff sin perfil no
       recibe nada; el payload no contiene datos del cliente. Debe fallar
@@ -553,7 +553,7 @@ equipo ni ajustes.
       `src/app/api/staff/[id]/route.ts`: staff sobre sí mismo solo
       `{ bio, phone, color }` (cualquier otro campo — `displayName`, `jobTitle`,
       `active`, `position` — **403 forbidden**, no 422); sobre otro perfil 404
-- [ ] T070 [US3] Editar `src/server/events/bus.ts`: `booking.updated` pasa a
+- [X] T070 [US3] Editar `src/server/events/bus.ts`: `booking.updated` pasa a
       `{ bookingId, staffId: string|null, scope: "own"|"shop"|"staff" }` (sin
       datos de cliente) y exporta `eventVisibleTo(actor, event)`; editar
       `src/app/api/events/route.ts` para usar `requireActor`, `403
@@ -561,7 +561,7 @@ equipo ni ajustes.
       `booking.updated` propios o del local; sin perfil → stream abierto sin
       eventos; mismos headers y heartbeat `: ping`). Pone en verde
       `tests/unit/events-filter.test.ts`
-- [ ] T071 [P] [US3] Editar `src/components/use-events.ts`: refetch por
+- [X] T071 [P] [US3] Editar `src/components/use-events.ts`: refetch por
       `booking.updated` sin asumir eventos de bandeja (que el staff nunca recibe)
 - [ ] T072 [US3] Verificar que `GET /api/staff/[id]/photo` y `GET
       /api/staff/[id]/services` respeten el alcance del staff (404 en otro
