@@ -290,17 +290,17 @@ servicios desde la API/UI; aparecen en el equipo, el catálogo y el listado de
 
 ### Tests primero (US1)
 
-- [ ] T031 [P] [US1] Crear `tests/unit/catalog.test.ts`: `effectiveDuration(
+- [X] T031 [P] [US1] Crear `tests/unit/catalog.test.ts`: `effectiveDuration(
       staffService, service)` = propia o catálogo; Zod de servicio
       (`durationMinutes` 5–600, `priceCents ≥ 0`, `currency` ISO en mayúsculas,
       `.strict()` rechaza campos desconocidos con `invalid_body`); `jobTitle`
       normalizado a minúsculas. Debe fallar
-- [ ] T032 [P] [US1] Crear `tests/unit/staff.test.ts`: validación Zod de
+- [X] T032 [P] [US1] Crear `tests/unit/staff.test.ts`: validación Zod de
       `StaffInput` (nombre 1–80, `color` `#RRGGBB`, `weeklyHours` normalizado como
       `upsertSettings`), `canDeactivate(activeCount)` → `last_active_staff` si es
       el último, `needsReassignment` (inactivo con citas futuras), `StaffDTO` no
       expone `memberId` y oculta `accountEmail` a reception. Debe fallar
-- [ ] T033 [US1] Agregar a `aislamientoChecks()` en `scripts/e2e-selftest.mjs`
+- [X] T033 [US1] Agregar a `aislamientoChecks()` en `scripts/e2e-selftest.mjs`
       las verificaciones de US1 (RED): owner `POST /api/staff` → **201**,
       `POST /api/services` → **201**; reception y staff `POST /api/staff` y
       `POST /api/services` → **403**; `PATCH /api/services/{id}` con
@@ -315,41 +315,41 @@ servicios desde la API/UI; aparecen en el equipo, el catálogo y el listado de
 
 ### Implementación (US1)
 
-- [ ] T034 [US1] Crear `src/server/agenda/catalog.ts`: `effectiveDuration()`
+- [X] T034 [US1] Crear `src/server/agenda/catalog.ts`: `effectiveDuration()`
       (pura), tipos `ServiceDTO`/`StaffServiceDTO`, y CRUD de `service` con
       `scoped()` — `createService`, `updateService` (incl. `active`),
       `deleteService` (`409 has_bookings` si hay citas), `listServices(actor,
       {includeInactive})`; precio único, sin precio por profesional. Pone en
       verde `tests/unit/catalog.test.ts`
-- [ ] T035 [US1] Crear `src/server/agenda/staff.ts`: `StaffDTO` y CRUD de
+- [X] T035 [US1] Crear `src/server/agenda/staff.ts`: `StaffDTO` y CRUD de
       perfiles — `createStaff`, `updateStaff` (owner: todo; el subconjunto del
       staff se aplica en US3), `deactivateStaff` (`last_active_staff`, marca
       `needsReassignment`), `deleteStaff` (`has_bookings` / `has_account`),
       `listStaff`, `linkAccount`/`unlinkAccount` sobre `staff.member_id`
       (UNIQUE parcial, 1 cuenta ↔ 1 perfil). Pone en verde
       `tests/unit/staff.test.ts`
-- [ ] T036 [US1] Editar `src/server/agenda/http.ts`: códigos estables nuevos
+- [X] T036 [US1] Editar `src/server/agenda/http.ts`: códigos estables nuevos
       `forbidden`, `account_disabled`, `last_active_staff`, `has_bookings`,
       `has_account`, `service_required`, `service_not_offered`, `duplicate`, y su
       mapeo a estado HTTP (403/409/422) para todas las rutas del feature
-- [ ] T037 [US1] Crear `src/app/api/staff/route.ts`: `GET` (owner/reception
+- [X] T037 [US1] Crear `src/app/api/staff/route.ts`: `GET` (owner/reception
       todos con `?includeInactive=1`; staff solo el propio o `[]`) y `POST`
       (owner, body `.strict()`, **201** `{ staff }`; reception/staff → 403).
       Todas las rutas del feature empiezan con `agendaDisabledResponse` (404
       apagado) y luego `withAuth`
-- [ ] T038 [US1] Crear `src/app/api/staff/[id]/route.ts`: `GET` (owner/reception;
+- [X] T038 [US1] Crear `src/app/api/staff/[id]/route.ts`: `GET` (owner/reception;
       staff solo el propio, 404 si no), `PATCH` (owner todo incluido `active`;
       reception → 403; staff → ver T069), `DELETE` (owner, **204**)
-- [ ] T039 [P] [US1] Crear `src/app/api/staff/[id]/account/route.ts`: `POST`
+- [X] T039 [P] [US1] Crear `src/app/api/staff/[id]/account/route.ts`: `POST`
       `{ email, name?, password ≥ 8 }` → crea usuario + `member{role:'staff'}`
       reutilizando `runInternalSignup` (`src/lib/auth/index.ts`) y vincula
       (**201** `{ok:true}`, `409 duplicate`, 422); `DELETE` desvincula y retira el
       `member` (**204**). Solo owner
-- [ ] T040 [P] [US1] Crear `src/app/api/services/route.ts`: `GET` (owner/reception
+- [X] T040 [P] [US1] Crear `src/app/api/services/route.ts`: `GET` (owner/reception
       todos con `?includeInactive=1`; staff solo activos y solo lectura, con
       `allowStaff`) y `POST` (owner, `.strict()`, **201**). El 403 de
       reception/staff se decide **antes** de parsear el cuerpo (R-403)
-- [ ] T041 [P] [US1] Crear `src/app/api/services/[id]/route.ts`: `PATCH` y
+- [X] T041 [P] [US1] Crear `src/app/api/services/[id]/route.ts`: `PATCH` y
       `DELETE` solo owner; reception/staff → `403 forbidden` antes de parsear
       (R-403, FR-013); `DELETE` → **204** o `409 has_bookings`
 - [ ] T042 [US1] Ejecutar `aislamientoChecks()` y dejar en verde las
@@ -670,7 +670,7 @@ cambiar el precio recibe 403 y no cambia nada.
 - [ ] T087 [P] [US5] Crear `tests/unit/image-sniff.test.ts`: `sniffImage(bytes)`
       reconoce JPEG, PNG y WebP por *magic bytes* (ignora el `content-type`
       declarado), rechaza SVG/HTML/vacío, límite 524 288 bytes. Debe fallar
-- [ ] T088 [P] [US5] Crear `tests/unit/staff-services.test.ts`: `PutStaffService`
+- [X] T088 [P] [US5] Crear `tests/unit/staff-services.test.ts`: `PutStaffService`
       Zod `.strict()` solo acepta `{ durationMinutes?: 5–600 | null }`; para el
       actor staff cualquier otra clave (`priceCents`, `price`, `name`) produce
       `ForbiddenError` (403, no 422); idempotencia de marcar dos veces; duración
@@ -689,12 +689,12 @@ cambiar el precio recibe 403 y no cambia nada.
 
 ### Implementación (US5)
 
-- [ ] T090 [US5] Editar `src/server/agenda/catalog.ts`: `listStaffServices(actor,
+- [X] T090 [US5] Editar `src/server/agenda/catalog.ts`: `listStaffServices(actor,
       staffId)`, `putStaffService` (idempotente, valida servicio activo y de la
       organización), `deleteStaffService`; un staff solo opera sobre su propio
       `staffId`; devuelve `StaffServiceDTO` con `effectiveDurationMinutes` y el
       precio del catálogo solo lectura. Pone en verde `tests/unit/staff-services.test.ts`
-- [ ] T091 [US5] Crear `src/app/api/staff/[id]/services/route.ts` (`GET`,
+- [X] T091 [US5] Crear `src/app/api/staff/[id]/services/route.ts` (`GET`,
       owner/reception/staff propio) y
       `src/app/api/staff/[id]/services/[serviceId]/route.ts` (`PUT` body
       `.strict()`, `DELETE` **204**; reception → 403; staff con clave distinta de

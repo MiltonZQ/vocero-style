@@ -2073,6 +2073,211 @@ async function abrirEventos(jar) {
   }
 }
 
+/**
+ * US1 (T033) — equipo, catálogo y cuenta. Solo con la agenda encendida:
+ * apagada estas rutas son 404 y la siembra SQL de la fase 2 no se toca.
+ * Limpia lo que crea. No desactiva al equipo de forma permanente: el último
+ * activo se prueba y se restaura.
+ */
+async function us1EquipoCatalogo({ ownerJar, jarA }) {
+  console.log("  -- US1 equipo, catálogo y cuenta (T033)");
+  const createdStaff = [];
+  const createdServices = [];
+  const receptionEmail = "iso-reception@vocero.test";
+
+  const receptionAlta = await api("/api/settings/team", {
+    method: "POST",
+    jar: ownerJar,
+    body: JSON.stringify({
+      name: "Recepcion E2E",
+      email: receptionEmail,
+      password: ISO_PASS,
+      role: "reception",
+    }),
+  });
+  ok(
+    "alta de recepción (201, o 409 si ya existe)",
+    receptionAlta.res.status === 201 || receptionAlta.res.status === 409,
+    `status ${receptionAlta.res.status}`
+  );
+  const jarR = newJar();
+  const loginR = await login(jarR, receptionEmail, ISO_PASS);
+  ok("la recepción inicia sesión", loginR.res.status === 200, `status ${loginR.res.status}`);
+
+  try {
+    const staffRes = await api("/api/staff", {
+      method: "POST",
+      jar: ownerJar,
+      body: JSON.stringify({
+        displayName: "US1 temporal",
+        jobTitle: "Barbero",
+        color: "#336699",
+      }),
+    });
+    ok("owner POST /api/staff → 201", staffRes.res.status === 201, `status ${staffRes.res.status}`);
+    const staffId = staffRes.json?.staff?.id;
+    if (staffId) createdStaff.push(staffId);
+
+    const serviceRes = await api("/api/services", {
+      method: "POST",
+      jar: ownerJar,
+      body: JSON.stringify({
+        name: "US1 corte",
+        durationMinutes: 30,
+        priceCents: 2500,
+        currency: "MXN",
+      }),
+    });
+    ok(
+      "owner POST /api/services → 201",
+      serviceRes.res.status === 201,
+      `status ${serviceRes.res.status}`
+    );
+    const serviceId = serviceRes.json?.service?.id;
+    if (serviceId) createdServices.push(serviceId);
+
+    for (const [who, jar] of [
+      ["reception", jarR],
+      ["staff", jarA],
+    ]) {
+      const denyStaff = await api("/api/staff", {
+        method: "POST",
+        jar,
+        body: JSON.stringify({ displayName: "intruso" }),
+      });
+      ok(`${who} POST /api/staff → 403`, denyStaff.res.status === 403, `status ${denyStaff.res.status}`);
+      const denyService = await api("/api/services", {
+        method: "POST",
+        jar,
+        body: JSON.stringify({ name: "intruso", durationMinutes: 30, priceCents: 1 }),
+      });
+      ok(
+        `${who} POST /api/services → 403`,
+        denyService.res.status === 403,
+        `status ${denyService.res.status}`
+      );
+    }
+
+    if (serviceId) {
+      for (const [who, jar] of [
+        ["staff", jarA],
+        ["reception", jarR],
+      ]) {
+        const price = await api(`/api/services/${serviceId}`, {
+          method: "PATCH",
+          jar,
+          body: JSON.stringify({ priceCents: 1 }),
+        });
+        ok(
+          `${who} PATCH /api/services/{id} precio → 403`,
+          price.res.status === 403 && price.json?.error?.code === "forbidden",
+          `${price.res.status} ${JSON.stringify(price.json)}`
+        );
+      }
+      const reread = await api("/api/services?includeInactive=1", { jar: ownerJar });
+      const row = (reread.json?.services ?? []).find((s) => s.id === serviceId);
+      ok(
+        "el precio sigue intacto releído por el dueño",
+        reread.res.status === 200 && row?.priceCents === 2500,
+        JSON.stringify(row)
+      );
+    }
+
+    if (staffId) {
+      const email = `iso-us1-${Date.now()}@vocero.test`;
+      const cuenta = await api(`/api/staff/${staffId}/account`, {
+        method: "POST",
+        jar: ownerJar,
+        body: JSON.stringify({ email, name: "US1 temporal", password: ISO_PASS }),
+      });
+      ok(
+        "POST /api/staff/{id}/account → 201",
+        cuenta.res.status === 201 && cuenta.json?.ok === true,
+        `${cuenta.res.status} ${JSON.stringify(cuenta.json)}`
+      );
+      const jarN = newJar();
+      const logged = await login(jarN, email, ISO_PASS);
+      ok("la cuenta nueva entra", logged.res.status === 200, `status ${logged.res.status}`);
+      const me = await api("/api/me", { jar: jarN });
+      ok(
+        "GET /api/me → role staff con su staffId",
+        me.res.status === 200 && me.json?.role === "staff" && me.json?.staffId === staffId,
+        JSON.stringify(me.json)
+      );
+
+      const off = await api(`/api/staff/${staffId}`, {
+        method: "PATCH",
+        jar: ownerJar,
+        body: JSON.stringify({ active: false }),
+      });
+      ok("desactivar un profesional que no es el último → 200", off.res.status === 200, `status ${off.res.status}`);
+      const meOff = await api("/api/me", { jar: jarN });
+      ok(
+        "su login recibe 403 account_disabled",
+        meOff.res.status === 403 && meOff.json?.error?.code === "account_disabled",
+        `${meOff.res.status} ${JSON.stringify(meOff.json)}`
+      );
+
+      const delCuenta = await api(`/api/staff/${staffId}`, { method: "DELETE", jar: ownerJar });
+      ok(
+        "DELETE /api/staff/{id} con cuenta → 409 has_account",
+        delCuenta.res.status === 409 && delCuenta.json?.error?.code === "has_account",
+        `${delCuenta.res.status} ${JSON.stringify(delCuenta.json)}`
+      );
+    }
+
+    const delCitas = await api(`/api/staff/${ISO.A.staff}`, { method: "DELETE", jar: ownerJar });
+    ok(
+      "DELETE /api/staff/{id} con citas → 409 has_bookings",
+      delCitas.res.status === 409 && delCitas.json?.error?.code === "has_bookings",
+      `${delCitas.res.status} ${JSON.stringify(delCitas.json)}`
+    );
+
+    const antes = await api("/api/staff?includeInactive=1", { jar: ownerJar });
+    const estabaActivo = (antes.json?.staff ?? []).filter((s) => s.active).map((s) => s.id);
+    const keeper = estabaActivo[0];
+    try {
+      for (const id of estabaActivo.slice(1)) {
+        await api(`/api/staff/${id}`, {
+          method: "PATCH",
+          jar: ownerJar,
+          body: JSON.stringify({ active: false }),
+        });
+      }
+      if (keeper) {
+        const last = await api(`/api/staff/${keeper}`, {
+          method: "PATCH",
+          jar: ownerJar,
+          body: JSON.stringify({ active: false }),
+        });
+        ok(
+          "PATCH /api/staff/{id} {active:false} sobre el último activo → 409 last_active_staff",
+          last.res.status === 409 && last.json?.error?.code === "last_active_staff",
+          `${last.res.status} ${JSON.stringify(last.json)}`
+        );
+      } else {
+        ok("había un profesional activo para probar last_active_staff", false);
+      }
+    } finally {
+      for (const id of estabaActivo) {
+        await api(`/api/staff/${id}`, {
+          method: "PATCH",
+          jar: ownerJar,
+          body: JSON.stringify({ active: true }),
+        });
+      }
+    }
+  } finally {
+    for (const id of createdStaff) {
+      await api(`/api/staff/${id}/account`, { method: "DELETE", jar: ownerJar });
+      await api(`/api/staff/${id}`, { method: "DELETE", jar: ownerJar });
+    }
+    for (const id of createdServices) {
+      await api(`/api/services/${id}`, { method: "DELETE", jar: ownerJar });
+    }
+  }
+}
+
 const ISO_PASS = "password-aislamiento-123";
 const ISO = {
   A: { email: "iso-staff-a@vocero.test", name: "Staff A", staff: "st_e2eisoA", booking: "bk_e2eisoA" },
@@ -2148,7 +2353,10 @@ async function aislamientoChecks() {
       ok("siembra: organización y servicio base existen", false);
       return;
     }
-    // Perfiles sembrados (se reemplaza por POST /api/staff/[id]/account en T033).
+    // Perfiles sembrados por SQL a propósito. T033 no los cambia: los ids fijos
+    // (`st_e2eisoA`…) y las citas de la fase 2 dependen de ellos, y con la
+    // agenda apagada POST /api/staff responde 404. La ruta de cuenta se prueba
+    // en el bloque US1, solo con la bandera encendida.
     for (const key of ["A", "B", "D"]) {
       const acc = ISO[key];
       await sql`insert into staff (id, organization_id, member_id, display_name, active, position)
@@ -2316,6 +2524,7 @@ async function aislamientoChecks() {
       ok("bandera apagada: /api/me informa agendaEnabled:false", meOwner.json?.agendaEnabled === false);
     } else {
       ok("bandera encendida: /api/me informa agendaEnabled:true", meOwner.json?.agendaEnabled === true);
+      await us1EquipoCatalogo({ ownerJar, jarA });
     }
   } finally {
     await limpiar().catch((e) => console.log(`  (limpieza falló: ${e})`));
