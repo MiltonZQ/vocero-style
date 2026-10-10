@@ -1,5 +1,11 @@
-import { requireSession, UnauthorizedError } from "@/lib/auth/session";
-import { subscribe } from "@/server/events/bus";
+import {
+  AccountDisabledError,
+  ForbiddenError,
+  requireActor,
+  type Actor,
+} from "@/lib/auth/actor";
+import { UnauthorizedError } from "@/lib/auth/session";
+import { eventVisibleTo, subscribe } from "@/server/events/bus";
 
 /**
  * Canal SSE de la bandeja (contrato sse.md).
@@ -12,16 +18,28 @@ const HEARTBEAT_MS = 25_000;
 const encoder = new TextEncoder();
 
 export async function GET(req: Request) {
-  let session;
+  let actor: Actor;
   try {
-    session = await requireSession();
+    actor = await requireActor();
   } catch (err) {
     if (err instanceof UnauthorizedError) {
       return new Response("No autenticado", { status: 401 });
     }
+    if (err instanceof AccountDisabledError) {
+      return Response.json(
+        { error: { code: "account_disabled", message: "Cuenta desactivada" } },
+        { status: 403 }
+      );
+    }
+    if (err instanceof ForbiddenError) {
+      return Response.json(
+        { error: { code: "forbidden", message: "Sin acceso" } },
+        { status: 403 }
+      );
+    }
     throw err;
   }
-  const { organizationId } = session;
+  const { organizationId } = actor;
 
   let cleanup: (() => void) | null = null;
 
@@ -37,7 +55,10 @@ export async function GET(req: Request) {
 
       send(`: conectado\n\n`);
 
+      // 018: el filtro por rol vive aqui, en el servidor. Un staff sin perfil
+      // recibe el stream abierto (heartbeat) pero ningun evento.
       const unsubscribe = subscribe(organizationId, (event) => {
+        if (!eventVisibleTo(actor, event)) return;
         send(
           `event: ${event.type}\n` +
             `id: ${Date.now()}\n` +

@@ -18,8 +18,16 @@ export type EventHandlers = {
     progress: { done: number; total: number };
     score?: number | null;
   }) => void;
-  /** 015 — Algo cambió en la agenda (también cuando agenda la IA). */
-  onBookingUpdated?: (data: { bookingId: string }) => void;
+  /**
+   * 015 — Algo cambió en la agenda (también cuando agenda la IA). 018: el
+   * staff solo recibe este evento (y solo el suyo o del local), así que quien
+   * lo consume no debe asumir que llegan eventos de bandeja.
+   */
+  onBookingUpdated?: (data: {
+    bookingId: string;
+    staffId?: string | null;
+    scope?: "own" | "shop" | "staff";
+  }) => void;
   /** Se llama tras RECONECTAR (no en la conexión inicial): catch-up con refetch. */
   onReconnect?: () => void;
 };

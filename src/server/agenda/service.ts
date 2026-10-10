@@ -24,6 +24,7 @@ import {
 import { ConnectorError } from "@/server/agenda/connectors/types";
 import { resolveDefaultCatalog } from "@/server/agenda/default-staff";
 import { moveLeadToStage } from "@/server/leads/stage-history";
+import { bookingUpdatedData } from "@/server/events/booking-event";
 import { publish } from "@/server/events/bus";
 
 /**
@@ -257,7 +258,7 @@ export async function createSessionBooking(input: {
 
   publish(input.organizationId, {
     type: "booking.updated",
-    data: { bookingId: delivered.id },
+    data: bookingUpdatedData(delivered),
   });
 
   return {
@@ -294,7 +295,7 @@ export async function createBlock(input: {
     const block = inserted[0]!;
     publish(input.organizationId, {
       type: "booking.updated",
-      data: { bookingId: block.id },
+      data: bookingUpdatedData(block),
     });
     return block;
   } catch (err) {
@@ -362,7 +363,7 @@ export async function rescheduleBooking(input: {
 
   publish(input.organizationId, {
     type: "booking.updated",
-    data: { bookingId: next.id },
+    data: bookingUpdatedData(next),
   });
   return {
     booking: next,
@@ -464,7 +465,7 @@ export async function cancelBooking(input: {
 
   publish(input.organizationId, {
     type: "booking.updated",
-    data: { bookingId: booking.id },
+    data: bookingUpdatedData(booking),
   });
 }
 
@@ -489,7 +490,7 @@ export async function markBookingStatus(input: {
   }
   publish(input.organizationId, {
     type: "booking.updated",
-    data: { bookingId: booking.id },
+    data: bookingUpdatedData(booking),
   });
 }
 
@@ -516,7 +517,7 @@ export async function retryMeetingLink(input: {
 
   publish(input.organizationId, {
     type: "booking.updated",
-    data: { bookingId: delivered.id },
+    data: bookingUpdatedData(delivered),
   });
   return {
     booking: delivered,
