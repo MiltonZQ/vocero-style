@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
   CalendarDays,
+  CalendarRange,
   FlaskConical,
   Inbox,
   Kanban,
@@ -14,6 +15,8 @@ import {
   Users,
   X,
 } from "lucide-react";
+import { navKeysFor } from "@/lib/agenda-roles-ui";
+import { normalizeRole } from "@/lib/auth/roles";
 import type { Branding } from "@/lib/branding";
 import type { ThemePreference } from "@/lib/theme";
 import { cn, initials } from "@/lib/utils";
@@ -43,6 +46,12 @@ const AGENDA_ITEM: NavItem = {
   href: "/bookings",
   label: "Citas",
   icon: CalendarDays,
+};
+
+const CALENDAR_ITEM: NavItem = {
+  href: "/calendar",
+  label: "Calendario",
+  icon: CalendarRange,
 };
 
 /**
@@ -111,10 +120,18 @@ export function AppNav({
 
   const sha = commit || BUILD_COMMIT;
   const settingsActive = pathname.startsWith("/settings");
+  const roleKey = normalizeRole(role);
+  const showCalendar =
+    roleKey != null && navKeysFor(roleKey, agenda).includes("calendar");
   // Citas va después de Pipeline: es el paso siguiente de un trato, no una
-  // sección aparte.
+  // sección aparte. Calendario solo para dueño y recepción, con agenda.
   const items = agenda
-    ? [...NAV.slice(0, 2), AGENDA_ITEM, ...NAV.slice(2)]
+    ? [
+        ...NAV.slice(0, 2),
+        AGENDA_ITEM,
+        ...(showCalendar ? [CALENDAR_ITEM] : []),
+        ...NAV.slice(2),
+      ]
     : NAV;
 
   return (

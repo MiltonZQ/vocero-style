@@ -627,26 +627,26 @@ agente aparece sin recargar.
 - [X] T080 [US4] Editar `src/app/api/calendar/settings/route.ts`: `PUT` solo
       owner (reception → 403 con la defensa de R-403), `GET` owner/reception;
       staff → 403 en ambos
-- [ ] T081 [P] [US4] Crear `src/components/calendar/staff-filter.tsx`: filtros
+- [x] T081 [P] [US4] Crear `src/components/calendar/staff-filter.tsx`: filtros
       por profesional y por oficio, estado en la URL
-- [ ] T082 [P] [US4] Crear `src/components/calendar/booking-dialog.tsx`: alta
+- [x] T082 [P] [US4] Crear `src/components/calendar/booking-dialog.tsx`: alta
       manual — elige columna/hora, profesional, servicio (solo los que ese
       profesional ofrece), cliente (`contactId` o alta rápida); la duración y el
       precio se autocompletan desde `GET /api/calendar/availability`; errores
       `slot_taken`/`service_not_offered` recuperables mostrando alternativas;
       acciones reasignar/mover/cancelar para citas existentes
-- [ ] T083 [US4] Crear `src/components/calendar/calendar-board.tsx` y
+- [x] T083 [US4] Crear `src/components/calendar/calendar-board.tsx` y
       `src/app/(app)/calendar/page.tsx` (`guardPage(["owner","reception"])`):
       vista día y semana, una columna por profesional con su color, citas en
       paralelo, bloqueos del local atravesando columnas, citas por reasignar
       señaladas; actualización por `useEvents` sin recargar (FR-026)
-- [ ] T084 [US4] Editar `src/components/app-nav.tsx` y
+- [x] T084 [US4] Editar `src/components/app-nav.tsx` y
       `src/lib/agenda-roles-ui.ts`: entrada «Calendario» para owner/reception
       con agenda encendida
 - [ ] T085 [US4] Editar `src/components/bookings/bookings-client.tsx` y
       `src/app/(app)/bookings/page.tsx`: columnas profesional, servicio y precio;
       reacciona al nuevo `BookingDTO`
-- [ ] T086 [US4] Correr `pnpm test:e2e`: verificaciones de US4 (T077) en verde;
+- [x] T086 [US4] Correr `pnpm test:e2e`: verificaciones de US4 (T077) en verde;
       captura de Playwright del calendario con 3 columnas guardada para
       revisión visual (**pendiente de verificación humana**)
 

@@ -175,6 +175,18 @@ describe("buildBoard", () => {
     });
     expect(byTitle.columns.map((column) => column.staffId)).toEqual(["st_active"]);
 
+    const byLowerTitle = buildBoard({
+      timeZone: "Europe/Madrid",
+      from: "2026-01-05",
+      days: 1,
+      now: new Date("2026-01-05T08:00:00.000Z"),
+      jobTitle: "color",
+      shopHours,
+      staff,
+      rows: [],
+    });
+    expect(byLowerTitle.columns.map((column) => column.staffId)).toEqual(["st_active"]);
+
     const byId = buildBoard({
       timeZone: "Europe/Madrid",
       from: "2026-01-05",

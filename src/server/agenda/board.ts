@@ -137,7 +137,13 @@ export function buildBoard(input: BoardInput): CalendarBoard {
   const columns = input.staff
     .filter((person) => {
       if (input.staffId && person.id !== input.staffId) return false;
-      if (input.jobTitle && person.jobTitle !== input.jobTitle) return false;
+      // The calendar URL stores jobTitle lowercased. Profiles keep the
+      // original casing, so the match cannot be case-sensitive.
+      if (input.jobTitle) {
+        const wanted = input.jobTitle.trim().toLowerCase();
+        const actual = (person.jobTitle ?? "").trim().toLowerCase();
+        if (wanted !== actual) return false;
+      }
       if (person.active) return true;
       return input.rows.some((row) => isFutureSession(row, person.id, input.now));
     })
