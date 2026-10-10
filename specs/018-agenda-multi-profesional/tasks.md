@@ -667,7 +667,7 @@ cambiar el precio recibe 403 y no cambia nada.
 
 ### Tests primero (US5)
 
-- [ ] T087 [P] [US5] Crear `tests/unit/image-sniff.test.ts`: `sniffImage(bytes)`
+- [X] T087 [P] [US5] Crear `tests/unit/image-sniff.test.ts`: `sniffImage(bytes)`
       reconoce JPEG, PNG y WebP por *magic bytes* (ignora el `content-type`
       declarado), rechaza SVG/HTML/vacío, límite 524 288 bytes. Debe fallar
 - [X] T088 [P] [US5] Crear `tests/unit/staff-services.test.ts`: `PutStaffService`
@@ -675,7 +675,10 @@ cambiar el precio recibe 403 y no cambia nada.
       actor staff cualquier otra clave (`priceCents`, `price`, `name`) produce
       `ForbiddenError` (403, no 422); idempotencia de marcar dos veces; duración
       `null` vuelve a la del catálogo. Debe fallar
-- [ ] T089 [US5] Agregar a `aislamientoChecks()` (RED) las verificaciones de US5:
+- [ ] T089 [US5] Agregar a `aislamientoChecks()` (RED) las verificaciones de US5.
+      Slice 4 ya dejó foto, SVG/vacío/413 y el 403 de recepción en horas, más
+      `pendiente` de la rejilla de 45 min. Sigue abierto el resto (precio,
+      duración y horario que rige la disponibilidad):
       (3) `PUT /api/staff/{A}/services/{id}` con `{priceCents:1}` como A → **403**
       y precio intacto; A marca un servicio con 45 min → `availability` devuelve
       huecos de 45 min y `priceCents` del catálogo; el dueño sube el precio →
@@ -700,19 +703,19 @@ cambiar el precio recibe 403 y no cambia nada.
       `.strict()`, `DELETE` **204**; reception → 403; staff con clave distinta de
       `durationMinutes` → **403 forbidden** antes de validar — R-403; servicio
       inactivo o ajeno → 404)
-- [ ] T092 [P] [US5] Crear `src/lib/image-sniff.ts` (*magic bytes* JPEG/PNG/WebP,
+- [X] T092 [P] [US5] Crear `src/lib/image-sniff.ts` (*magic bytes* JPEG/PNG/WebP,
       sin SVG; patrón de `src/lib/favicon.ts`). Pone en verde
       `tests/unit/image-sniff.test.ts`
-- [ ] T093 [US5] Crear `src/server/agenda/photo.ts`: guardar/leer/borrar en
+- [X] T093 [US5] Crear `src/server/agenda/photo.ts`: guardar/leer/borrar en
       `staff_photo` (`bytea`), valida tamaño y tipo desde los bytes, incrementa
       `staff.photo_version`, valida el tenant en cada acceso
-- [ ] T094 [US5] Crear `src/app/api/staff/[id]/photo/route.ts`: `PUT` cuerpo
+- [X] T094 [US5] Crear `src/app/api/staff/[id]/photo/route.ts`: `PUT` cuerpo
       crudo (patrón de `src/app/api/settings/branding/favicon/route.ts`),
       `DELETE` **204**, `GET` bytes con `Content-Type` real,
       `X-Content-Type-Options: nosniff`, `Cache-Control: private, max-age=86400`;
       owner todo, staff solo el propio, reception solo `GET`; 404 si no hay foto
       o fuera de alcance
-- [ ] T095 [US5] Editar `src/server/agenda/hours.ts`: `getStaffHours(actor,
+- [X] T095 [US5] Editar `src/server/agenda/hours.ts`: `getStaffHours(actor,
       staffId)` (`weeklyHours`, `effectiveWeeklyHours`, `inheritsShopHours`) y
       `putStaffHours` (normaliza, `null` vuelve a heredar); crear
       `src/app/api/staff/[id]/hours/route.ts` (`GET` owner/reception/staff
@@ -720,7 +723,11 @@ cambiar el precio recibe 403 y no cambia nada.
 - [ ] T096 [US5] Editar `src/server/agenda/staff.ts`: `StaffDTO` completo
       (`hasPhoto`, `photoUrl` versionada `?v=`, `effectiveWeeklyHours`,
       `hasAccount`) y la edición del subconjunto del staff (bio, teléfono,
-      color); confirmar que `GET /api/staff/[id]` entrega servicios
+      color); confirmar que `GET /api/staff/[id]` entrega servicios.
+      Slice 4 ya rellena foto y horario efectivo en lista, ficha y alta
+      (`toStaffDTO` sigue puro: sin argumentos extra, los tests viejos ven
+      `hasPhoto: false` y `effectiveWeeklyHours === weeklyHours`). PATCH sigue
+      solo del dueño: el subconjunto del staff no se abrió en esta tanda.
 - [ ] T097 [US5] Correr `pnpm test:e2e`: verificaciones de US5 (T089) y (3)
       «staff no cambia precios» en verde. Registrar RED→GREEN
 

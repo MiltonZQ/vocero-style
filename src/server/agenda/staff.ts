@@ -11,7 +11,10 @@ import {
   type StaffServiceDTO,
 } from "@/server/agenda/catalog";
 import { AgendaHttpError } from "@/server/agenda/http";
+import { effectiveHours } from "@/server/agenda/hours";
+import { staffPhotoUrl } from "@/server/agenda/photo";
 import {
+  getSettings,
   normalizeWeeklyHours,
   type WeeklyHours,
 } from "@/server/agenda/settings";
@@ -138,8 +141,8 @@ export type StaffDTO = {
   color: string;
   position: number;
   active: boolean;
-  hasPhoto: false;
-  photoUrl: null;
+  hasPhoto: boolean;
+  photoUrl: string | null;
   weeklyHours: WeeklyHours | null;
   effectiveWeeklyHours: WeeklyHours | null;
   hasAccount: boolean;
@@ -152,6 +155,14 @@ export function toStaffDTO(input: {
   viewer: Role;
   accountEmail?: string | null;
   hasFutureBookings?: boolean;
+  /** Ausente ⇒ sin foto. La fila `staff_photo` manda, no `photo_version`. */
+  hasPhoto?: boolean;
+  photoUrl?: string | null;
+  /**
+   * Ausente ⇒ el horario de la columna, sin heredar el local. Quien arma el
+   * DTO (lista, ficha, alta) pasa el recorte ya calculado.
+   */
+  effectiveWeeklyHours?: WeeklyHours | null;
 }): StaffDTO {
   const { profile } = input;
   const dto: StaffDTO = {
@@ -163,10 +174,13 @@ export function toStaffDTO(input: {
     color: profile.color,
     position: profile.position,
     active: profile.active,
-    hasPhoto: false,
-    photoUrl: null,
+    hasPhoto: input.hasPhoto ?? false,
+    photoUrl: input.photoUrl ?? null,
     weeklyHours: profile.weeklyHours,
-    effectiveWeeklyHours: profile.weeklyHours,
+    effectiveWeeklyHours:
+      input.effectiveWeeklyHours !== undefined
+        ? input.effectiveWeeklyHours
+        : profile.weeklyHours,
     hasAccount: profile.memberId !== null,
   };
   if (input.viewer === "owner") {
@@ -280,20 +294,55 @@ async function futureSessionStaffIds(
   return set;
 }
 
-function presentRows(
+async function photoStaffIds(
+  organizationId: string,
+  staffIds: string[]
+): Promise<Set<string>> {
+  const set = new Set<string>();
+  if (staffIds.length === 0) return set;
+  const db = getDb();
+  const rows = await db
+    .select({ staffId: schema.staffPhoto.staffId })
+    .from(schema.staffPhoto)
+    .where(
+      scoped(
+        schema.staffPhoto.organizationId,
+        organizationId,
+        inArray(schema.staffPhoto.staffId, staffIds)
+      )
+    );
+  for (const row of rows) set.add(row.staffId);
+  return set;
+}
+
+async function presentRows(
+  actor: Actor,
   rows: StaffRow[],
-  viewer: Role,
-  emails: Map<string, string>,
-  future: Set<string>
-): StaffDTO[] {
-  return rows.map((row) =>
-    toStaffDTO({
-      profile: rowToProfile(row),
-      viewer,
+  emails: Map<string, string>
+): Promise<StaffDTO[]> {
+  if (rows.length === 0) return [];
+  const ids = rows.map((row) => row.id);
+  const [settings, future, photos] = await Promise.all([
+    getSettings(actor.organizationId),
+    futureSessionStaffIds(actor.organizationId, ids),
+    photoStaffIds(actor.organizationId, ids),
+  ]);
+  return rows.map((row) => {
+    const profile = rowToProfile(row);
+    const hasPhoto = photos.has(row.id);
+    return toStaffDTO({
+      profile,
+      viewer: actor.role,
       accountEmail: row.memberId ? (emails.get(row.memberId) ?? null) : null,
       hasFutureBookings: future.has(row.id),
-    })
-  );
+      hasPhoto,
+      photoUrl: hasPhoto ? staffPhotoUrl(row.id, row.photoVersion) : null,
+      effectiveWeeklyHours: effectiveHours(
+        profile.weeklyHours,
+        settings.weeklyHours
+      ).weeklyHours,
+    });
+  });
 }
 
 export async function listStaff(
@@ -329,11 +378,7 @@ export async function listStaff(
           rows.flatMap((row) => (row.memberId ? [row.memberId] : []))
         )
       : new Map<string, string>();
-  const future = await futureSessionStaffIds(
-    actor.organizationId,
-    rows.map((row) => row.id)
-  );
-  return presentRows(rows, actor.role, emails, future);
+  return presentRows(actor, rows, emails);
 }
 
 export async function getStaff(
@@ -345,9 +390,9 @@ export async function getStaff(
     actor.role === "owner" && row.memberId
       ? await emailsByMember(actor.organizationId, [row.memberId])
       : new Map<string, string>();
-  const future = await futureSessionStaffIds(actor.organizationId, [row.id]);
   const services = await listStaffServices(actor, staffId);
-  const staff = presentRows([row], actor.role, emails, future)[0];
+  const presented = await presentRows(actor, [row], emails);
+  const staff = presented[0];
   if (!staff) throw new AgendaHttpError("not_found", "No encontrado");
   return { staff, services };
 }
@@ -374,11 +419,17 @@ export async function createStaff(
     .returning();
   const row = inserted[0];
   if (!row) throw new AgendaHttpError("invalid_body", "No se pudo crear el profesional");
+  const settings = await getSettings(actor.organizationId);
+  const profile = rowToProfile(row);
   return toStaffDTO({
-    profile: rowToProfile(row),
+    profile,
     viewer: "owner",
     accountEmail: null,
     hasFutureBookings: false,
+    hasPhoto: false,
+    photoUrl: null,
+    effectiveWeeklyHours: effectiveHours(profile.weeklyHours, settings.weeklyHours)
+      .weeklyHours,
   });
 }
 

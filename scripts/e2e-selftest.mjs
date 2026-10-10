@@ -2278,6 +2278,113 @@ async function us1EquipoCatalogo({ ownerJar, jarA }) {
   }
 }
 
+/**
+ * US5 (T089) — foto y horario. La rejilla de 45 minutos no se afirma aquí:
+ * el motor de disponibilidad es la slice 5.
+ */
+async function us5FotoYHorario({ ownerJar, jarA }) {
+  console.log("  -- US5 foto y horario (sin rejilla de disponibilidad)");
+  const png = Buffer.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+  ]);
+
+  const foto = await api(`/api/staff/${ISO.A.staff}/photo`, {
+    method: "PUT",
+    jar: jarA,
+    headers: { "content-type": "image/png" },
+    body: png,
+  });
+  ok(
+    "PUT /api/staff/{A}/photo PNG → 200 photoUrl",
+    foto.res.status === 200 && typeof foto.json?.photoUrl === "string",
+    `${foto.res.status} ${JSON.stringify(foto.json)}`
+  );
+
+  const svg = await api(`/api/staff/${ISO.A.staff}/photo`, {
+    method: "PUT",
+    jar: jarA,
+    headers: { "content-type": "image/svg+xml" },
+    body: Buffer.from("<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>"),
+  });
+  ok(
+    "PUT foto SVG → 422 unsupported",
+    svg.res.status === 422 && svg.json?.error?.code === "unsupported",
+    `${svg.res.status} ${JSON.stringify(svg.json)}`
+  );
+
+  const vacia = await api(`/api/staff/${ISO.A.staff}/photo`, {
+    method: "PUT",
+    jar: jarA,
+    headers: { "content-type": "image/png" },
+    body: Buffer.alloc(0),
+  });
+  ok(
+    "PUT foto vacía → 422 empty",
+    vacia.res.status === 422 && vacia.json?.error?.code === "empty",
+    `${vacia.res.status} ${JSON.stringify(vacia.json)}`
+  );
+
+  const enorme = Buffer.alloc(524289);
+  png.copy(enorme);
+  const grande = await api(`/api/staff/${ISO.A.staff}/photo`, {
+    method: "PUT",
+    jar: jarA,
+    headers: { "content-type": "image/png" },
+    body: enorme,
+  });
+  ok(
+    "PUT foto de 524289 bytes → 413 too_large",
+    grande.res.status === 413 && grande.json?.error?.code === "too_large",
+    `${grande.res.status} ${JSON.stringify(grande.json)}`
+  );
+
+  const deB = await api(`/api/staff/${ISO.B.staff}/photo`, {
+    method: "PUT",
+    jar: ownerJar,
+    headers: { "content-type": "image/png" },
+    body: png,
+  });
+  ok(
+    "el dueño sube la foto de B",
+    deB.res.status === 200,
+    `${deB.res.status} ${JSON.stringify(deB.json)}`
+  );
+  const ajena = await api(`/api/staff/${ISO.B.staff}/photo`, { jar: jarA });
+  ok(
+    "staff A GET foto de B → 404",
+    ajena.res.status === 404,
+    `status ${ajena.res.status}`
+  );
+
+  const jarR = newJar();
+  const loginR = await login(jarR, "iso-reception@vocero.test", ISO_PASS);
+  ok(
+    "recepción de US5 inicia sesión",
+    loginR.res.status === 200,
+    `status ${loginR.res.status}`
+  );
+  const horas = await api(`/api/staff/${ISO.A.staff}/hours`, {
+    method: "PUT",
+    jar: jarR,
+    body: JSON.stringify({
+      weeklyHours: { mon: [{ start: "09:00", end: "12:00" }] },
+    }),
+  });
+  ok(
+    "reception PUT /api/staff/{id}/hours → 403",
+    horas.res.status === 403,
+    `${horas.res.status} ${JSON.stringify(horas.json)}`
+  );
+
+  pendiente(
+    "huecos de 45 minutos en availability",
+    false,
+    "Slice 5",
+    "la rejilla llega con el motor de disponibilidad"
+  );
+}
+
 const ISO_PASS = "password-aislamiento-123";
 const ISO = {
   A: { email: "iso-staff-a@vocero.test", name: "Staff A", staff: "st_e2eisoA", booking: "bk_e2eisoA" },
@@ -2525,6 +2632,7 @@ async function aislamientoChecks() {
     } else {
       ok("bandera encendida: /api/me informa agendaEnabled:true", meOwner.json?.agendaEnabled === true);
       await us1EquipoCatalogo({ ownerJar, jarA });
+      await us5FotoYHorario({ ownerJar, jarA });
     }
   } finally {
     await limpiar().catch((e) => console.log(`  (limpieza falló: ${e})`));

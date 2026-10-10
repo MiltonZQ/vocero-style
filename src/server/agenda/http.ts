@@ -84,6 +84,9 @@ export const AGENDA_ERROR_STATUS = {
   duplicate: 409,
   not_found: 404,
   invalid_body: 422,
+  empty: 422,
+  unsupported: 422,
+  too_large: 413,
 } as const;
 
 export type AgendaErrorCode = keyof typeof AGENDA_ERROR_STATUS;

@@ -190,6 +190,9 @@ describe("agendaErrorStatus", () => {
     expect(agendaErrorStatus("duplicate")).toBe(409);
     expect(agendaErrorStatus("service_required")).toBe(422);
     expect(agendaErrorStatus("service_not_offered")).toBe(422);
+    expect(agendaErrorStatus("empty")).toBe(422);
+    expect(agendaErrorStatus("unsupported")).toBe(422);
+    expect(agendaErrorStatus("too_large")).toBe(413);
     expect(bookingErrorStatus("slot_taken")).toBe(409);
     expect(bookingErrorStatus("slot_not_offered")).toBe(409);
     expect(bookingErrorStatus("service_required")).toBe(422);
