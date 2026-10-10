@@ -1,14 +1,20 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { betterAuth } from "better-auth";
-import { APIError, createAuthMiddleware } from "better-auth/api";
+import {
+  APIError,
+  createAuthMiddleware,
+  getSessionFromCtx,
+} from "better-auth/api";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { organization } from "better-auth/plugins";
 import { getDb, schema } from "@/lib/db";
 import { getEnv } from "@/lib/env";
+import { isOrgMutationBlocked, normalizeRole } from "@/lib/auth/roles";
 import { AUTH_RATE_LIMIT, checkRateLimit } from "@/lib/rate-limit";
 import {
   onUserCreated,
   resolveActiveOrganizationId,
+  resolveMembership,
 } from "@/server/auth/on-signup";
 import { isPublicSignupAllowed } from "@/server/auth/registration";
 
@@ -85,6 +91,24 @@ function createAuth() {
               message:
                 "El registro está cerrado: esta instancia ya tiene su organización",
             });
+          }
+        }
+        // 018 (D5): defensa en profundidad. Un `staff` no muta nada del plugin
+        // de organización (roles de miembros, invitaciones…); la autorización
+        // del dominio vive en `withAuth`, no aquí.
+        if (ctx.path.startsWith("/organization/")) {
+          const method = ctx.request?.method ?? ctx.method ?? "POST";
+          if (method.toUpperCase() !== "GET") {
+            const current = await getSessionFromCtx(ctx).catch(() => null);
+            if (current) {
+              const membership = await resolveMembership(current.user.id);
+              const role = normalizeRole(membership?.role);
+              if (isOrgMutationBlocked(ctx.path, method, role)) {
+                throw new APIError("FORBIDDEN", {
+                  message: "Sin permiso para administrar la organización",
+                });
+              }
+            }
           }
         }
       }),

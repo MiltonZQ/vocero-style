@@ -1,3 +1,4 @@
+import { requirePageActor } from "@/lib/auth/actor";
 import { SettingsNav } from "@/components/settings/settings-nav";
 import { agendaEnabled } from "@/server/agenda/flag";
 import { atribucionEnabled } from "@/server/attribution/flag";
@@ -8,9 +9,11 @@ import { isChannelEnabled } from "@/server/channels/enabled";
 // plataforma no haría nada.
 export const dynamic = "force-dynamic";
 
-export default function SettingsLayout({
+export default async function SettingsLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
+  // 018: ningún ajuste es del staff (cubre todas las páginas de ajustes).
+  await requirePageActor(["owner", "reception"]);
   return (
     <div className="flex h-full flex-col">
       <header className="border-b px-4 py-3 sm:px-6 sm:py-4">

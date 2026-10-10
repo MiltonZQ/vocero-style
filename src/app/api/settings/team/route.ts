@@ -5,6 +5,7 @@ import { getAuth, runInternalSignup } from "@/lib/auth";
 import { getDb, schema } from "@/lib/db";
 import { newId } from "@/lib/db/ids";
 import { scoped } from "@/lib/db/tenant";
+import { normalizeRole } from "@/lib/auth/roles";
 
 export const dynamic = "force-dynamic";
 
@@ -24,7 +25,8 @@ export const GET = withAuth(async (session) => {
   return Response.json({
     members: members.map((m) => ({
       id: m.id,
-      role: m.role,
+      // El legado `member` se lee como `reception` (018, D5).
+      role: normalizeRole(m.role) ?? m.role,
       name: m.name,
       email: m.email,
       createdAt: m.createdAt.toISOString(),
@@ -36,6 +38,9 @@ const createSchema = z.object({
   name: z.string().trim().min(1).max(120),
   email: z.string().trim().email(),
   password: z.string().min(8).max(128),
+  // 018: `owner` no se crea por aquí. Un `staff` sin perfil vinculado es
+  // válido: no ve nada hasta que el dueño lo vincule (FR-006).
+  role: z.enum(["reception", "staff"]).default("reception"),
 });
 
 /** Alta de cuenta de equipo (owner only): email + contraseña temporal (FR-061). */
@@ -75,7 +80,7 @@ export const POST = withAuth(async (session, req: Request) => {
       id: newId("member"),
       organizationId: session.organizationId,
       userId: newUserId,
-      role: "member",
+      role: body.data.role,
     })
     .onConflictDoNothing();
 

@@ -1,10 +1,12 @@
+import { requirePageActor } from "@/lib/auth/actor";
 import { notFound } from "next/navigation";
 import { BookingsClient } from "@/components/bookings/bookings-client";
 import { agendaEnabled } from "@/server/agenda/flag";
 
 export const dynamic = "force-dynamic";
 
-export default function BookingsPage() {
+export default async function BookingsPage() {
+  await requirePageActor(["owner", "reception"]);
   // Sin la bandera esta pantalla no existe en esta instancia.
   if (!agendaEnabled()) notFound();
   return (
