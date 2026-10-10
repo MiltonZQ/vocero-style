@@ -55,6 +55,32 @@ export async function onUserCreated(userId: string, userName: string) {
       id: newId("agentProfile"),
       organizationId: orgId,
     });
+
+    // 018 — la agenda nace lista: un profesional (el dueño) y un servicio
+    // «Cita». Convergente con el backfill de la migración 0014, que siembra lo
+    // mismo en las instancias que ya existían.
+    const staffId = newId("staff");
+    const serviceId = newId("service");
+    await tx.insert(schema.staff).values({
+      id: staffId,
+      organizationId: orgId,
+      displayName: userName || "Mi negocio",
+      active: true,
+      position: 0,
+    });
+    await tx.insert(schema.service).values({
+      id: serviceId,
+      organizationId: orgId,
+      name: "Cita",
+      durationMinutes: 30,
+      priceCents: 0,
+      currency: "MXN",
+    });
+    await tx.insert(schema.staffService).values({
+      staffId,
+      serviceId,
+      organizationId: orgId,
+    });
   });
 }
 

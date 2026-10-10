@@ -29,6 +29,9 @@ const prefixes = {
   adAttribution: "att",
   conversionEvent: "cve",
   capiSettings: "capi",
+  // 018 — agenda multi-profesional (staff_service y staff_photo: clave natural)
+  staff: "st",
+  service: "sv",
 } as const;
 
 export type IdKind = keyof typeof prefixes;
