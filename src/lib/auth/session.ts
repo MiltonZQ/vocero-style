@@ -2,6 +2,8 @@ import { headers } from "next/headers";
 import { getAuth } from "@/lib/auth";
 import { resolveMembership } from "@/server/auth/on-signup";
 
+export type { Actor, Role } from "@/lib/auth/actor";
+
 export type SessionContext = {
   userId: string;
   organizationId: string;
