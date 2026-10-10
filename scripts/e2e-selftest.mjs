@@ -29,26 +29,54 @@ function ok(name, cond, extra = "") {
   }
 }
 
+/**
+ * 018 — Una jar de cookies por usuario. Sin `jar`, `api()` se comporta EXACTO
+ * como siempre (cookie global `cookie`), de modo que `main()` y
+ * `agendaChecks()` no cambian. Con `jar`, la llamada no toca el estado global:
+ * por eso es segura en paralelo (carreras, un usuario por jar).
+ */
+function newJar() {
+  return { cookie: "" };
+}
+
 async function api(path, opts = {}) {
+  const { jar, ...fetchOpts } = opts;
+  const current = jar ? jar.cookie : cookie;
   const res = await fetch(`${BASE}${path}`, {
-    ...opts,
+    ...fetchOpts,
     headers: {
       "content-type": "application/json",
       // Better Auth valida Origin (CSRF) en los endpoints de auth.
       origin: BASE,
-      ...(cookie ? { cookie } : {}),
-      ...(opts.headers ?? {}),
+      ...(current ? { cookie: current } : {}),
+      ...(fetchOpts.headers ?? {}),
     },
   });
   const setCookie = res.headers.getSetCookie?.() ?? [];
   if (setCookie.length) {
-    cookie = setCookie.map((c) => c.split(";")[0]).join("; ");
+    const next = setCookie.map((c) => c.split(";")[0]).join("; ");
+    if (jar) jar.cookie = next;
+    else cookie = next;
   }
   let json = null;
   try {
     json = await res.clone().json();
   } catch {}
   return { res, json };
+}
+
+/** Versión paralelo-segura: exige jar, así que nunca toca la cookie global. */
+function apiAsync(path, opts = {}) {
+  if (!opts.jar) throw new Error("apiAsync() exige una jar de cookies");
+  return api(path, opts);
+}
+
+async function login(jar, email, password) {
+  return api("/api/auth/sign-in/email", {
+    method: "POST",
+    jar,
+    body: JSON.stringify({ email, password }),
+  });
 }
 
 function bot(path, opts = {}) {
@@ -1076,6 +1104,7 @@ async function main() {
   );
 
   await agendaChecks();
+  await aislamientoChecks();
   await atribucionChecks();
 
   console.log(`\n===== ${checks - failures}/${checks} checks OK, ${failures} fallos =====`);
@@ -1996,4 +2025,303 @@ async function atribucionChecks() {
     act7.length >= 3,
     `${act7.length} filas`
   );
+}
+
+/* ============================================================
+ * 018 — Agenda multi-profesional: gate de AISLAMIENTO por actor
+ * (specs/018-agenda-multi-profesional/tasks.md, T009/T033/T064)
+ *
+ * Nace en la Fase 2 y cada historia le suma verificaciones. Los códigos HTTP
+ * se comparan EXACTOS (nunca `res.ok`). Lo que una historia posterior (US3)
+ * todavía no implementa se marca `pendiente(...)`: se ejecuta, se ve fallar
+ * (rojo observable) y NO cuenta como fallo hasta que su slice lo active.
+ *
+ * Siembra por SQL (dependencia `postgres`) los perfiles `staff` que más
+ * adelante crea `POST /api/staff/[id]/account` (T033). Se limpia al empezar y
+ * al terminar: dejar profesionales extra activos rompería la compatibilidad
+ * temporal de la 015 en la siguiente corrida (SC-006).
+ * ============================================================ */
+
+let pendientes = 0;
+
+/** Check de una historia aún sin implementar: visible, pero no tumba el gate. */
+function pendiente(name, cond, historia, extra = "") {
+  if (cond) {
+    checks++;
+    console.log(`  OK  ${name}`);
+  } else {
+    pendientes++;
+    console.log(`  PENDIENTE(${historia}) ${name}${extra ? ` — ${extra}` : ""}`);
+  }
+}
+
+/** Abre el SSE con una jar, devuelve status/headers y lo cierra. */
+async function abrirEventos(jar) {
+  const ctrl = new AbortController();
+  try {
+    const res = await fetch(`${BASE}/api/events`, {
+      headers: { cookie: jar.cookie, origin: BASE },
+      signal: ctrl.signal,
+    });
+    let json = null;
+    if (res.headers.get("content-type")?.includes("json")) {
+      json = await res.json().catch(() => null);
+    }
+    return { status: res.status, json, type: res.headers.get("content-type") };
+  } finally {
+    ctrl.abort();
+  }
+}
+
+const ISO_PASS = "password-aislamiento-123";
+const ISO = {
+  A: { email: "iso-staff-a@vocero.test", name: "Staff A", staff: "st_e2eisoA", booking: "bk_e2eisoA" },
+  B: { email: "iso-staff-b@vocero.test", name: "Staff B", staff: "st_e2eisoB", booking: "bk_e2eisoB" },
+  C: { email: "iso-staff-c@vocero.test", name: "Staff sin perfil" },
+  D: { email: "iso-staff-d@vocero.test", name: "Staff desactivado", staff: "st_e2eisoD" },
+};
+const ISO_STAFF_IDS = [ISO.A.staff, ISO.B.staff, ISO.D.staff];
+const ISO_BOOKING_IDS = [ISO.A.booking, ISO.B.booking];
+
+async function aislamientoChecks() {
+  const encendida = /^(on|1|true|si|sí|yes)$/i.test(
+    (process.env.AGENDA ?? "").trim()
+  );
+  console.log("\n== 018: aislamiento por actor (roles, alcance, deny-by-default) ==");
+
+  const dbUrl = process.env.DATABASE_URL ?? "";
+  let host = "";
+  try {
+    host = new URL(dbUrl).hostname;
+  } catch {}
+  if (!["localhost", "127.0.0.1", "::1", "[::1]"].includes(host)) {
+    ok(
+      "aislamiento: DATABASE_URL local (la siembra por SQL nunca toca una BD remota)",
+      false,
+      "DATABASE_URL ausente o no local"
+    );
+    return;
+  }
+  const { default: postgres } = await import("postgres");
+  const sql = postgres(dbUrl, { max: 2 });
+
+  const limpiar = async () => {
+    await sql`delete from booking where id = any(${ISO_BOOKING_IDS})`;
+    await sql`delete from staff where id = any(${ISO_STAFF_IDS})`;
+  };
+
+  try {
+    await limpiar();
+
+    // ---- siembra: 4 cuentas de equipo con rol staff (dueño = jar global) ----
+    const ownerJar = { cookie };
+    for (const key of ["A", "B", "C", "D"]) {
+      const acc = ISO[key];
+      const r = await api("/api/settings/team", {
+        method: "POST",
+        jar: ownerJar,
+        body: JSON.stringify({
+          name: acc.name,
+          email: acc.email,
+          password: ISO_PASS,
+          role: "staff",
+        }),
+      });
+      ok(
+        `alta de cuenta staff ${key} (201, o 409 en re-corrida)`,
+        r.res.status === 201 || r.res.status === 409,
+        `status ${r.res.status}`
+      );
+    }
+    const members = await sql`
+      select u.email, m.id as member_id, m.role, m.organization_id
+      from member m join "user" u on u.id = m.user_id
+      where u.email = any(${Object.values(ISO).map((a) => a.email)})`;
+    const byEmail = Object.fromEntries(members.map((m) => [m.email, m]));
+    ok(
+      "las cuentas de equipo nacen con rol `staff`",
+      Object.values(ISO).every((a) => byEmail[a.email]?.role === "staff")
+    );
+    const orgId = byEmail[ISO.A.email]?.organization_id;
+    const [svc] = await sql`select id from service where organization_id = ${orgId} order by position limit 1`;
+    if (!orgId || !svc) {
+      ok("siembra: organización y servicio base existen", false);
+      return;
+    }
+    // Perfiles sembrados (se reemplaza por POST /api/staff/[id]/account en T033).
+    for (const key of ["A", "B", "D"]) {
+      const acc = ISO[key];
+      await sql`insert into staff (id, organization_id, member_id, display_name, active, position)
+        values (${acc.staff}, ${orgId}, ${byEmail[acc.email].member_id}, ${acc.name},
+                ${key !== "D"}, ${100 + ISO_STAFF_IDS.indexOf(acc.staff)})`;
+    }
+    await sql`insert into booking (id, organization_id, kind, status, scheduled_at, duration_minutes, staff_id, service_id, price_cents, currency)
+      values (${ISO.A.booking}, ${orgId}, 'session', 'agendada', now() + interval '30 days', 30, ${ISO.A.staff}, ${svc.id}, 0, 'MXN'),
+             (${ISO.B.booking}, ${orgId}, 'session', 'agendada', now() + interval '31 days', 30, ${ISO.B.staff}, ${svc.id}, 0, 'MXN')`;
+
+    const jarA = newJar();
+    const jarB = newJar();
+    const jarC = newJar();
+    const jarD = newJar();
+    const logins = await Promise.all([
+      login(jarA, ISO.A.email, ISO_PASS),
+      login(jarB, ISO.B.email, ISO_PASS),
+      login(jarC, ISO.C.email, ISO_PASS),
+      login(jarD, ISO.D.email, ISO_PASS),
+    ]);
+    ok(
+      "las 4 cuentas staff inician sesión (una jar por usuario)",
+      logins.every((l) => l.res.status === 200),
+      logins.map((l) => l.res.status).join(",")
+    );
+
+    // ---- GET /api/me ----
+    console.log("  -- /api/me y roles");
+    const meOwner = await api("/api/me", { jar: ownerJar });
+    ok("GET /api/me del dueño → 200 role owner", meOwner.res.status === 200 && meOwner.json?.role === "owner", `status ${meOwner.res.status}`);
+    ok("el dueño no tiene staffId", meOwner.json?.staffId === null);
+    ok(
+      `/api/me informa agendaEnabled:${encendida}`,
+      meOwner.json?.agendaEnabled === encendida
+    );
+    const meA = await apiAsync("/api/me", { jar: jarA });
+    ok("staff A: /api/me → 200 role staff con su staffId", meA.res.status === 200 && meA.json?.role === "staff" && meA.json?.staffId === ISO.A.staff, JSON.stringify(meA.json));
+    const meC = await apiAsync("/api/me", { jar: jarC });
+    ok("staff sin perfil: /api/me → 200 staffId null", meC.res.status === 200 && meC.json?.role === "staff" && meC.json?.staffId === null, JSON.stringify(meC.json));
+
+    // ---- (4) superficies vedadas para staff ----
+    console.log("  -- (4) superficies vedadas para staff → 403 exacto");
+    for (const ruta of [
+      "/api/conversations",
+      "/api/contacts",
+      "/api/pipeline/board",
+      "/api/lab/runs",
+      "/api/settings/team",
+      "/api/calendar/settings",
+      "/api/templates",
+      "/api/agent/profile",
+    ]) {
+      const r = await apiAsync(ruta, { jar: jarA });
+      ok(`staff A GET ${ruta} → 403`, r.res.status === 403, `status ${r.res.status}`);
+    }
+    const nuevoEquipo = await apiAsync("/api/settings/team", {
+      method: "POST",
+      jar: jarA,
+      body: JSON.stringify({ name: "x", email: "x@vocero.test", password: "password-x-123", role: "staff" }),
+    });
+    ok("staff A no puede crear cuentas de equipo → 403", nuevoEquipo.res.status === 403, `status ${nuevoEquipo.res.status}`);
+    // El tablero global lo crea la Slice 5: hasta entonces la ruta no existe (404).
+    {
+      const r = await apiAsync("/api/calendar/board", { jar: jarA });
+      pendiente("staff A GET /api/calendar/board → 403", r.res.status === 403, "Slice 5", `status ${r.res.status}`);
+    }
+
+    console.log("  -- (4) mutaciones del plugin de organización → rechazadas");
+    const memberA = byEmail[ISO.A.email].member_id;
+    const escalada = await apiAsync("/api/auth/organization/update-member-role", {
+      method: "POST",
+      jar: jarA,
+      body: JSON.stringify({ memberId: memberA, role: "owner", organizationId: orgId }),
+    });
+    ok("staff A: update-member-role → 403", escalada.res.status === 403, `status ${escalada.res.status}`);
+    const invitar = await apiAsync("/api/auth/organization/invite-member", {
+      method: "POST",
+      jar: jarA,
+      body: JSON.stringify({ email: "intruso@vocero.test", role: "owner", organizationId: orgId }),
+    });
+    ok("staff A: invite-member → 403", invitar.res.status === 403, `status ${invitar.res.status}`);
+    const [rolDespues] = await sql`select role from member where id = ${memberA}`;
+    ok("el rol de staff A sigue siendo `staff` tras el intento de escalada", rolDespues?.role === "staff", rolDespues?.role);
+
+    console.log("  -- (4) páginas: el staff se redirige a su agenda (UX; la defensa real son las APIs)");
+    for (const ruta of ["/inbox", "/contacts", "/pipeline", "/agent", "/lab", "/bookings", "/settings/team"]) {
+      const r = await fetch(`${BASE}${ruta}`, {
+        redirect: "manual",
+        headers: { cookie: jarA.cookie },
+      });
+      const destino = r.headers.get("location") ?? "";
+      ok(
+        `staff A GET ${ruta} → redirige a /my-agenda`,
+        [307, 308].includes(r.status) && destino.endsWith("/my-agenda"),
+        `status ${r.status} → ${destino}`
+      );
+    }
+    {
+      const r = await fetch(`${BASE}/inbox`, {
+        redirect: "manual",
+        headers: { cookie: ownerJar.cookie },
+      });
+      ok("el dueño sigue entrando a /inbox → 200", r.status === 200, `status ${r.status}`);
+    }
+
+    // ---- SSE ----
+    console.log("  -- SSE: el stream respeta el rol");
+    const sseA = await abrirEventos(jarA);
+    ok("staff A: /api/events → 200 text/event-stream", sseA.status === 200 && sseA.type === "text/event-stream", `status ${sseA.status}`);
+    const sseC = await abrirEventos(jarC);
+    ok("staff sin perfil: /api/events → 200 (stream abierto, sin eventos)", sseC.status === 200, `status ${sseC.status}`);
+    const sseOwner = await abrirEventos(ownerJar);
+    ok("dueño: /api/events → 200", sseOwner.status === 200, `status ${sseOwner.status}`);
+
+    // ---- (5) cuenta sin perfil / desactivada ----
+    console.log("  -- (5) cuenta staff sin perfil y con perfil desactivado");
+    {
+      const r = await apiAsync("/api/settings/whatsapp", { jar: jarC });
+      ok("staff sin perfil: ruta de ajustes → 403", r.res.status === 403, `status ${r.res.status}`);
+      const w = await apiAsync("/api/bookings", {
+        method: "POST",
+        jar: jarC,
+        body: JSON.stringify({}),
+      });
+      ok("staff sin perfil: escritura POST /api/bookings → 403", w.res.status === 403, `status ${w.res.status}`);
+      const l = await apiAsync("/api/bookings", { jar: jarC });
+      pendiente(
+        "staff sin perfil: GET /api/bookings → 200 con lista vacía",
+        l.res.status === 200 && (l.json?.bookings ?? []).length === 0,
+        "US3",
+        `status ${l.res.status}`
+      );
+    }
+    const meD = await apiAsync("/api/me", { jar: jarD });
+    ok("perfil desactivado: /api/me → 403 account_disabled", meD.res.status === 403 && meD.json?.error?.code === "account_disabled", `${meD.res.status} ${JSON.stringify(meD.json)}`);
+    const conD = await apiAsync("/api/conversations", { jar: jarD });
+    ok("perfil desactivado: cualquier ruta → 403 account_disabled", conD.res.status === 403 && conD.json?.error?.code === "account_disabled", `${conD.res.status} ${JSON.stringify(conD.json)}`);
+    const sseD = await abrirEventos(jarD);
+    ok("perfil desactivado: /api/events → 403 account_disabled", sseD.status === 403 && sseD.json?.error?.code === "account_disabled", `${sseD.status} ${JSON.stringify(sseD.json)}`);
+
+    // ---- (1) lectura cruzada (US3: en rojo hasta implementarla) ----
+    console.log("  -- (1) lectura cruzada entre profesionales (US3)");
+    {
+      const r = await apiAsync(`/api/bookings/${ISO.B.booking}`, { jar: jarA });
+      pendiente("staff A GET /api/bookings/{cita de B} → 404", r.res.status === 404, "US3", `status ${r.res.status}`);
+      const own = await apiAsync(`/api/bookings/${ISO.A.booking}`, { jar: jarA });
+      pendiente("staff A GET /api/bookings/{su cita} → 200", own.res.status === 200, "US3", `status ${own.res.status}`);
+      const list = await apiAsync("/api/bookings", { jar: jarA });
+      const ids = (list.json?.bookings ?? []).map((b) => b.id);
+      pendiente(
+        "staff A GET /api/bookings no contiene citas de B",
+        list.res.status === 200 && !ids.includes(ISO.B.booking) && ids.includes(ISO.A.booking),
+        "US3",
+        `status ${list.res.status}`
+      );
+    }
+
+    // ---- (9) bandera de la agenda ----
+    console.log("  -- (9) bandera de la agenda");
+    if (!encendida) {
+      for (const ruta of ["/api/staff", "/api/services", "/api/calendar/board"]) {
+        const r = await api(ruta, { jar: ownerJar });
+        ok(`bandera apagada: GET ${ruta} → 404`, r.res.status === 404, `status ${r.res.status}`);
+      }
+      ok("bandera apagada: /api/me informa agendaEnabled:false", meOwner.json?.agendaEnabled === false);
+    } else {
+      ok("bandera encendida: /api/me informa agendaEnabled:true", meOwner.json?.agendaEnabled === true);
+    }
+  } finally {
+    await limpiar().catch((e) => console.log(`  (limpieza falló: ${e})`));
+    await sql.end({ timeout: 5 });
+    if (pendientes > 0) {
+      console.log(`  (${pendientes} verificación(es) PENDIENTE: pertenecen a slices siguientes y se activan allí)`);
+    }
+  }
 }
