@@ -1,10 +1,12 @@
 import {
   boolean,
   check,
+  customType,
   index,
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -716,6 +718,159 @@ export const calendarSettings = pgTable(
   (t) => [uniqueIndex("calendar_settings_org_uq").on(t.organizationId)]
 );
 
+/** `bytea` no tiene tipo nativo en Drizzle 0.38. */
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType() {
+    return "bytea";
+  },
+});
+
+/**
+ * Columna GENERADA ALWAYS ... STORED: la define el SQL; Drizzle solo la lee.
+ * Nunca debe aparecer en un INSERT/UPDATE (por eso los `.values()` no la
+ * incluyen y el tipo de inserción la marca opcional).
+ */
+const generatedTimestamp = customType<{ data: Date; driverData: string }>({
+  dataType() {
+    return "timestamp";
+  },
+  fromDriver(value) {
+    return new Date(value.endsWith("Z") ? value : `${value}Z`);
+  },
+});
+
+/* ============================================================
+ * 018 — Agenda multi-profesional
+ *
+ * Mismo trato que la 015: tablas SIEMPRE creadas, bandera `AGENDA` apagada ⇒
+ * inertes. `staff_service` y `staff_photo` usan clave natural (sin prefijo).
+ * ============================================================ */
+
+/** El profesional: una columna del calendario. Desactivar ≠ borrar. */
+export const staff = pgTable(
+  "staff",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    /** La cuenta de acceso; NULL = perfil sin cuenta. */
+    memberId: text("member_id").references(() => member.id, {
+      onDelete: "set null",
+    }),
+    displayName: text("display_name").notNull(),
+    /** Oficio libre, normalizado a minúsculas. Dato de perfil, NO de permisos. */
+    jobTitle: text("job_title"),
+    bio: text("bio"),
+    phone: text("phone"),
+    /** `#RRGGBB`: color de la columna en el calendario. */
+    color: text("color").notNull().default("#0d5bff"),
+    position: integer("position").notNull().default(0),
+    active: boolean("active").notNull().default(true),
+    /** Misma forma que `calendar_settings.weekly_hours`; NULL ⇒ hereda el del local. */
+    weeklyHours: jsonb("weekly_hours"),
+    /** 0 = sin foto; sube en cada carga (cache-busting de `?v=`). */
+    photoVersion: integer("photo_version").notNull().default(0),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("staff_org_active_idx").on(t.organizationId, t.active, t.position),
+    // Una cuenta ↔ un perfil.
+    uniqueIndex("staff_member_uq")
+      .on(t.memberId)
+      .where(sql`${t.memberId} is not null`),
+  ]
+);
+
+/**
+ * La foto vive en la propia instancia (sin S3/R2: Constitución II). Tabla
+ * aparte a propósito: ningún `SELECT ... FROM staff` arrastra bytes.
+ */
+export const staffPhoto = pgTable(
+  "staff_photo",
+  {
+    staffId: text("staff_id")
+      .primaryKey()
+      .references(() => staff.id, { onDelete: "cascade" }),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    /** Derivado de los BYTES, no del header que mande el cliente. */
+    mime: text("mime", {
+      enum: ["image/jpeg", "image/png", "image/webp"],
+    }).notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    data: bytea("data").notNull(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("staff_photo_org_idx").on(t.organizationId),
+    check("staff_photo_size_ck", sql`${t.sizeBytes} <= 524288`),
+  ]
+);
+
+/** El catálogo del dueño: un precio único por servicio. */
+export const service = pgTable(
+  "service",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    durationMinutes: integer("duration_minutes").notNull(),
+    priceCents: integer("price_cents").notNull().default(0),
+    /** ISO-4217 en mayúsculas. */
+    currency: text("currency").notNull().default("MXN"),
+    /** Oficio al que aplica: sugerencia de filtrado, NO restricción. */
+    jobTitle: text("job_title"),
+    active: boolean("active").notNull().default(true),
+    position: integer("position").notNull().default(0),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("service_org_active_idx").on(t.organizationId, t.active, t.position),
+    check(
+      "service_duration_ck",
+      sql`${t.durationMinutes} between 5 and 600`
+    ),
+    check("service_price_ck", sql`${t.priceCents} >= 0`),
+    check("service_currency_ck", sql`char_length(${t.currency}) = 3`),
+  ]
+);
+
+/**
+ * Qué servicios hace cada profesional. SIN columna de precio: el ataque
+ * "staff cambia el precio" no tiene dónde aterrizar a nivel de esquema.
+ */
+export const staffService = pgTable(
+  "staff_service",
+  {
+    staffId: text("staff_id")
+      .notNull()
+      .references(() => staff.id, { onDelete: "cascade" }),
+    serviceId: text("service_id")
+      .notNull()
+      .references(() => service.id, { onDelete: "cascade" }),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    /** Duración propia del profesional; NULL ⇒ la del catálogo. */
+    durationMinutes: integer("duration_minutes"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.staffId, t.serviceId] }),
+    index("staff_service_org_service_idx").on(t.organizationId, t.serviceId),
+    check(
+      "staff_service_duration_ck",
+      sql`${t.durationMinutes} is null or ${t.durationMinutes} between 5 and 600`
+    ),
+  ]
+);
+
 /**
  * La cita. Una sola tabla para sesiones y bloqueos manuales: un bloqueo es
  * una cita sin contacto que ocupa agenda igual.
@@ -770,25 +925,51 @@ export const booking = pgTable(
     /** Conversación del Laboratorio: jamás llama a un conector real. */
     isTest: boolean("is_test").notNull().default(false),
     notes: text("notes"),
+    /**
+     * 018 — el profesional. Obligatorio en `session`; en `block` es el
+     * bloqueo personal, o NULL = bloqueo de todo el local. RESTRICT: un
+     * profesional con citas jamás se borra (se desactiva).
+     */
+    staffId: text("staff_id").references(() => staff.id, {
+      onDelete: "restrict",
+    }),
+    /** 018 — el servicio reservado. Obligatorio en `session`, NULL en `block`. */
+    serviceId: text("service_id").references(() => service.id, {
+      onDelete: "restrict",
+    }),
+    /** 018 — precio COPIADO del catálogo al reservar (la cita es un hecho). */
+    priceCents: integer("price_cents"),
+    currency: text("currency"),
+    /**
+     * 018 — fin de la cita: columna GENERADA (`scheduled_at + duration`), la
+     * define el SQL de la 0014 y Drizzle nunca la escribe. Es lo que el
+     * `EXCLUDE` necesita para comparar rangos.
+     */
+    endsAt: generatedTimestamp("ends_at"),
+    /**
+     * 018 — solo la migración la pone en true: citas legadas que ya se
+     * solapaban antes de existir el constraint (research D2). Quedan fuera
+     * del `EXCLUDE`; cualquier UPDATE que las normalice la baja a false.
+     */
+    legacyOverlap: boolean("legacy_overlap").notNull().default(false),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
   (t) => [
     index("booking_org_when_idx").on(t.organizationId, t.scheduledAt),
     index("booking_org_status_idx").on(t.organizationId, t.status),
-    /**
-     * Anti doble-booking ATÓMICO. La re-validación al confirmar deja una
-     * ventana entre leer y escribir; esto la cierra en la BASE: dos
-     * confirmaciones simultáneas del mismo instante no pueden ganar las dos, y
-     * la perdedora recibe un 23505 que el servicio traduce a `slot_taken` con
-     * alternativas frescas. Las citas de prueba quedan fuera: no consumen la
-     * agenda real.
+    index("booking_org_staff_when_idx").on(
+      t.organizationId,
+      t.staffId,
+      t.scheduledAt
+    ),
+    /*
+     * El CHECK `booking_session_has_staff_service` y el `EXCLUDE`
+     * `booking_staff_no_overlap` (la garantía anti doble-booking por
+     * profesional, que reemplazó al índice único `booking_org_active_slot_uq`
+     * de la 015) viven SOLO en drizzle/0014: Drizzle no sabe expresar un
+     * EXCLUDE y `db:generate` no los ve ni los toca.
      */
-    uniqueIndex("booking_org_active_slot_uq")
-      .on(t.organizationId, t.scheduledAt)
-      .where(
-        sql`${t.status} in ('agendada','realizada') and ${t.isTest} = false`
-      ),
   ]
 );
 
@@ -814,6 +995,17 @@ export const offeredSlot = pgTable(
     startUtc: timestamp("start_utc").notNull(),
     /** La etiqueta EXACTA que se le mostró al cliente. */
     label: text("label").notNull(),
+    /** 018 — el profesional dueño de ESE hueco. NULL = oferta previa a la 018. */
+    staffId: text("staff_id").references(() => staff.id, {
+      onDelete: "cascade",
+    }),
+    serviceId: text("service_id").references(() => service.id, {
+      onDelete: "cascade",
+    }),
+    /** 018 — la duración efectiva ofrecida: la reserva usa esta, no recalcula. */
+    durationMinutes: integer("duration_minutes"),
+    /** 018 — el cliente pidió "cualquiera": permite reasignar si hubo carrera. */
+    anyStaff: boolean("any_staff").notNull().default(false),
     offeredAt: timestamp("offered_at").notNull().defaultNow(),
   },
   (t) => [index("offered_slot_conv_idx").on(t.conversationId, t.startUtc)]
