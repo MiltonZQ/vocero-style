@@ -24,7 +24,7 @@ const DEFAULT_RUNS = 5;
 const DEFAULT_CONCURRENCY = 6;
 const ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
 
-const HELP = `Evaluates models on the barber-bot action contract (12 cases x N runs).
+const HELP = `Evaluates models on the barber-bot action contract (15 cases x N runs).
 
 Usage: node --env-file=.env scripts/eval-bot-model.mjs [models...] [options]
 
@@ -81,44 +81,46 @@ const STAGES = "Nuevo | Interesado | Cita agendada | Cliente";
 const TODAY = "domingo 11 de octubre de 2026, 10:00";
 const TIMEZONE = "America/Mexico_City";
 
-const SYSTEM = [
-  `Eres "${PROFILE_NAME}", el asistente de WhatsApp de este negocio. Respondes SIEMPRE en español neutro, con mensajes breves y naturales para chat.`,
+export const SYSTEM = [
+  `Eres "${PROFILE_NAME}", el asistente de WhatsApp de este negocio. Respondes SIEMPRE en español neutro, tratando al cliente de tú, con un tono profesional, cálido y cercano, sin jerga; mensajes breves y naturales para chat, con a lo más un emoji ligero cuando salga natural.`,
   `CONOCIMIENTO DEL NEGOCIO (tu única fuente de verdad; si algo no está aquí, NO lo inventes — di que lo confirmarás con el equipo o escala):\n${KB}`,
   CATALOG,
   `HORARIO DEL LOCAL: ${SHOP_HOURS}`,
   `Etapas del pipeline disponibles: ${STAGES}`,
   [
     "En cada turno respondes ÚNICAMENTE un objeto JSON con UNA acción:",
-    '- {"action":"none"} — no responder nada.',
-    '- {"action":"reply","text":"..."} — responder al cliente.',
-    '- {"action":"update_lead","note":"...","reply":"..."} — guardar una nota del lead (reply opcional).',
-    '- {"action":"move_stage","stage":"<nombre exacto de etapa>","reply":"..."} — mover el lead (reply opcional).',
-    '- {"action":"handoff","reason":"...","farewell":"..."} — escalar a un humano (farewell opcional para despedirte).',
-    '- {"action":"update_draft","service":"...","staff":"...","when":{"day":"...","from":"HH:mm","to":"HH:mm"},"reply":"..."} — registrar lo que el cliente decidió. Llena TODOS los campos que diga en ese mensaje, a la vez. reply es opcional y MUY breve (sin horarios ni precios: los pone el sistema).',
-    '- {"action":"book_slot","option":1} — el cliente eligió una de las opciones NUMERADAS que el sistema le ofreció (1, 2 o 3).',
-    '- {"action":"my_bookings"} — el cliente pregunta por su cita ("¿a qué hora era mi cita?").',
+    "- {\"action\":\"none\"} — no responder nada.",
+    "- {\"action\":\"reply\",\"text\":\"...\"} — responder al cliente.",
+    "- {\"action\":\"update_lead\",\"note\":\"...\",\"reply\":\"...\"} — guardar una nota del lead (reply opcional).",
+    "- {\"action\":\"move_stage\",\"stage\":\"<nombre exacto de etapa>\",\"reply\":\"...\"} — mover el lead (reply opcional).",
+    "- {\"action\":\"handoff\",\"reason\":\"...\",\"farewell\":\"...\"} — escalar a un humano (farewell opcional para despedirte).",
+    "- {\"action\":\"greeting\"} — el cliente solo saluda o charla sin pedir nada concreto (\"hola\", \"buenas tardes\"). El sistema le da la bienvenida y le pregunta qué servicio desea.",
+    "- {\"action\":\"update_draft\",\"service\":\"...\",\"staff\":\"...\",\"when\":{\"day\":\"...\",\"from\":\"HH:mm\",\"to\":\"HH:mm\"}} — registrar lo que el cliente decidió. Llena TODOS los campos que diga en ese mensaje, a la vez. No escribas texto para el cliente: el sistema redacta la respuesta.",
+    "- {\"action\":\"book_slot\",\"time\":\"HH:mm\",\"day\":\"...\",\"option\":1} — el cliente eligió uno de los horarios que el sistema le ofreció. Pon la HORA que dijo en time (24 h), y day solo si mencionó el día. Si solo eligió por posición (\"el primero\", \"la segunda\"), pon option (1, 2 o 3).",
+    "- {\"action\":\"my_bookings\"} — el cliente pregunta por su cita (\"¿a qué hora era mi cita?\").",
     "Reglas duras:",
     "- Si el cliente pide hablar con una persona o un humano → handoff.",
     "- Si la pregunta NO está cubierta por el conocimiento → NO inventes: responde que lo confirmarás o escala.",
     "- Si detectas intención clara de compra → move_stage a la etapa de interesados y confirma al cliente.",
-    "- Orden de la reserva: primero el servicio, luego el profesional (o cualquiera), luego el horario. El sistema pregunta lo que falte y ofrece los horarios; tú solo registras lo que el cliente dice.",
+    "- Embudo de la reserva: saludo → qué servicio desea → con qué profesional (o el primero disponible) → qué horario → confirmación. El sistema pregunta lo que falte, ofrece los horarios y redacta la confirmación; tú solo registras lo que el cliente dice, sin repetirle preguntas.",
     "- NUNCA escribas horarios, fechas ni precios tú: el sistema los pega. NUNCA calcules fechas.",
-    '- when.day es EXACTAMENTE "hoy", "mañana", "pasado mañana", el nombre del día ("lunes".."domingo") o YYYY-MM-DD SOLO si el cliente dijo una fecha explícita. from/to en HH:mm de 24 h.',
-    '- Franjas: "en la mañana" = 10:00-13:00, "en la tarde" = 14:00-19:00, "en la noche" = 18:00-20:00; ajústalas al horario del local.',
+    "- when.day es EXACTAMENTE \"hoy\", \"mañana\", \"pasado mañana\", el nombre del día (\"lunes\"..\"domingo\") o YYYY-MM-DD SOLO si el cliente dijo una fecha explícita. from/to en HH:mm de 24 h.",
+    "- Franjas: \"en la mañana\" = 10:00-13:00, \"en la tarde\" = 14:00-19:00, \"en la noche\" = 18:00-20:00; ajústalas al horario del local.",
     "- La disponibilidad NO la decides tú: si el cliente menciona un día u hora, pásalo SIEMPRE en when, aunque creas que el local está cerrado o lleno. El sistema verifica y ofrece lo más cercano. Tu reply jamás dice si hay o no lugar.",
-    '- Si el cliente elige una opción por número o posición ("la segunda", "la 2"), usa book_slot con esa option. Solo hay opciones si el ESTADO DEL BORRADOR las lista.',
+    "- Si el cliente elige uno de los horarios ofrecidos (\"a las 9:30\", \"el de las 10\", \"el martes a las 5\", \"ese\", \"el primero\"), usa book_slot: con la hora en time si la dijo, con option si eligió por posición. Solo hay horarios ofrecidos si el ESTADO DEL BORRADOR los lista; si la hora que pide NO está en esa lista, usa update_draft con su when.",
     "- Si ningún horario le sirve y pide otro día u hora → update_draft con el nuevo when.",
-    '- Si quiere CANCELAR → handoff con reason "cancelacion". Si quiere CAMBIAR/REPROGRAMAR → handoff con reason "reprogramacion". Esas decisiones no son tuyas.',
-    '- Si avisa que llegará tarde o viene sin cita → handoff con reason "llegada".',
-    '- Si pide hablar con una persona, se queja o manda una foto/archivo que no puedes atender → handoff con reason "cliente".',
-    "- Preguntas generales (dirección, pagos, horario, estacionamiento) o saludo: reply, SOLO con datos del conocimiento.",
+    "- Si quiere CANCELAR → handoff con reason \"cancelacion\". Si quiere CAMBIAR/REPROGRAMAR → handoff con reason \"reprogramacion\". Esas decisiones no son tuyas.",
+    "- Si avisa que llegará tarde o viene sin cita → handoff con reason \"llegada\".",
+    "- Si pide hablar con una persona, se queja o manda una foto/archivo que no puedes atender → handoff con reason \"cliente\".",
+    "- Un saludo sin pedido concreto → greeting. Preguntas generales (dirección, pagos, horario, estacionamiento): reply, SOLO con datos del conocimiento.",
+    "- Cuando escribas un reply: trato de tú, profesional y cálido, español neutro, sin jerga ni muletillas (nada de \"te late\", \"te da igual\", \"bro\", \"wey\"), breve y con a lo más un emoji ligero cuando salga natural.",
     "- service y staff son NOMBRES del catálogo, nunca ids. Si pide un servicio que no está en el catálogo, usa update_draft con su texto literal en service (NO digas que lo confirmarás): el sistema le responde con lo más parecido.",
     "- JSON puro, sin markdown ni texto adicional.",
   ].join("\n"),
 ].join("\n\n");
 
 /** Same shape as `buildDraftStateBlock`: goes LAST, after the conversation. */
-function stateBlock({ step = "need_service", service = null, staff = null, when = null, options = [] } = {}) {
+export function stateBlock({ step = "need_service", service = null, staff = null, when = null, options = [] } = {}) {
   return {
     role: "system",
     content: [
@@ -129,8 +131,8 @@ function stateBlock({ step = "need_service", service = null, staff = null, when 
       `- profesional: ${staff ?? "(sin elegir)"}`,
       `- horario pedido: ${when ?? "(sin preferencia)"}`,
       options.length > 0
-        ? `- opciones ofrecidas al cliente:\n${options.map((o, i) => `  ${i + 1}) ${o}`).join("\n")}`
-        : "- opciones ofrecidas al cliente: (ninguna)",
+        ? `- horarios ofrecidos al cliente, en el orden en que los leyó (elige por hora en 24 h o por posición):\n${options.map((o, i) => `  ${i + 1}) ${o}`).join("\n")}`
+        : "- horarios ofrecidos al cliente: (ninguno)",
     ].join("\n"),
   };
 }
@@ -141,21 +143,33 @@ const norm = (s) => (s ?? "").toLowerCase().normalize("NFD").replace(/\p{M}/gu, 
 const inRange = (t, lo, hi) => typeof t === "string" && t >= lo && t <= hi;
 const user = (content) => ({ role: "user", content });
 
+// Same shape as the draft-state block of the app: day in words, 24 h time, who.
 const OFFERED = [
-  "mañana lunes, 12 de octubre a las 14:00 con Charly",
-  "mañana lunes, 12 de octubre a las 14:30 con Charly",
-  "mañana lunes, 12 de octubre a las 15:00 con Charly",
+  "mañana lunes 12 de octubre 14:00 · Charly",
+  "mañana lunes 12 de octubre 14:30 · Charly",
+  "mañana lunes 12 de octubre 15:00 · Charly",
 ];
 const OFFERS_TURN = {
   role: "assistant",
-  content: `Para Fade con Charly, esto tengo:\n${OFFERED.map((o, i) => `${i + 1}) ${o}`).join("\n")}\n\nResponde con el número de la opción que prefieras, o dime otro día u hora.`,
+  content:
+    "Para mañana lunes 12 de octubre tenemos disponible a las 2:00 p. m., 2:30 p. m. y 3:00 p. m. ¿Cuál de estos horarios prefieres, o deseas que consultemos otra fecha?",
+};
+const OFFERED_AM = [
+  "mañana lunes 12 de octubre 09:00 · Luis",
+  "mañana lunes 12 de octubre 09:30 · Luis",
+  "mañana lunes 12 de octubre 10:00 · Luis",
+];
+const OFFERS_AM_TURN = {
+  role: "assistant",
+  content:
+    "Para mañana lunes 12 de octubre tenemos disponible a las 9:00 a. m., 9:30 a. m. y 10:00 a. m. ¿Cuál de estos horarios prefieres, o deseas que consultemos otra fecha?",
 };
 
 export const CASES = [
   {
     id: "01-saludo",
     msgs: [user("hola buenas"), stateBlock()],
-    check: (o) => o.action === "reply",
+    check: (o) => o.action === "greeting",
   },
   {
     id: "02-todo-junto",
@@ -191,7 +205,7 @@ export const CASES = [
       user("la segunda porfa"),
       stateBlock({ step: "ready", service: "Fade", staff: "Charly", when: "mañana de 14:00 a 19:00", options: OFFERED }),
     ],
-    check: (o) => o.action === "book_slot" && Number(o.option) === 2,
+    check: (o) => o.action === "book_slot" && (Number(o.option) === 2 || o.time === "14:30"),
   },
   {
     id: "06-mi-cita",
@@ -232,6 +246,36 @@ export const CASES = [
       norm(o.service).includes("barba") &&
       norm(o.when?.day) === "hoy" &&
       inRange(o.when?.from, "17:00", "19:00"),
+  },
+  {
+    id: "13-elige-por-hora",
+    msgs: [
+      user("quiero un corte con luis mañana temprano"),
+      OFFERS_AM_TURN,
+      user("a las 9:30"),
+      stateBlock({ step: "ready", service: "Corte clásico", staff: "Luis", when: "mañana de 10:00 a 13:00", options: OFFERED_AM }),
+    ],
+    check: (o) => o.action === "book_slot" && o.time === "09:30",
+  },
+  {
+    id: "14-el-primero",
+    msgs: [
+      user("quiero un fade con charly mañana en la tarde"),
+      OFFERS_TURN,
+      user("el primero"),
+      stateBlock({ step: "ready", service: "Fade", staff: "Charly", when: "mañana de 14:00 a 19:00", options: OFFERED }),
+    ],
+    check: (o) => o.action === "book_slot" && (Number(o.option) === 1 || o.time === "14:00"),
+  },
+  {
+    id: "15-hora-no-ofrecida",
+    msgs: [
+      user("quiero un fade con charly mañana en la tarde"),
+      OFFERS_TURN,
+      user("mejor a las 5 de la tarde"),
+      stateBlock({ step: "ready", service: "Fade", staff: "Charly", when: "mañana de 14:00 a 19:00", options: OFFERED }),
+    ],
+    check: (o) => o.action === "update_draft" && typeof o.when?.from === "string" && o.when.from.startsWith("17"),
   },
 ];
 

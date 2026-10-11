@@ -36,6 +36,34 @@ describe("guardAction - book_slot", () => {
   });
 });
 
+describe("guardAction - book_slot by time", () => {
+  it("runs with a time or a day and no ordinal", () => {
+    const byTime: BotAction = { action: "book_slot", time: "09:30" };
+    expect(guardAction(byTime, "ready", ctx({ offerCount: 3 }))).toEqual({ kind: "run", action: byTime });
+    const byDay: BotAction = { action: "book_slot", day: "martes" };
+    expect(guardAction(byDay, "ready", ctx({ offerCount: 3 }))).toEqual({ kind: "run", action: byDay });
+  });
+
+  it("a stray ordinal does not block a time the client did say", () => {
+    const a: BotAction = { action: "book_slot", time: "10:00", option: 9 };
+    expect(guardAction(a, "ready", ctx({ offerCount: 3 }))).toEqual({ kind: "run", action: a });
+  });
+
+  it("with nothing to go on, asks which time", () => {
+    expect(guardAction({ action: "book_slot" }, "ready", ctx({ offerCount: 3 }))).toMatchObject({
+      kind: "redirect",
+      directive: { type: "ask_option" },
+    });
+  });
+
+  it("without offers a time still redirects to the missing step", () => {
+    expect(guardAction({ action: "book_slot", time: "09:30" }, "need_slot", ctx())).toMatchObject({
+      kind: "redirect",
+      directive: { type: "offer_slots" },
+    });
+  });
+});
+
 describe("guardAction - update_draft", () => {
   it("staff without any service known asks for the service", () => {
     const empty = ctx({ draft: { serviceId: null, staffChoice: null } });
@@ -68,6 +96,7 @@ describe("guardAction - passthrough", () => {
   it.each<BotAction>([
     { action: "reply", text: "hola" },
     { action: "my_bookings" },
+    { action: "greeting" },
     { action: "handoff", reason: "cliente" },
     { action: "update_lead", name: "Ana" },
     { action: "move_stage", stage: "x" },

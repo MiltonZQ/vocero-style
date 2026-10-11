@@ -140,13 +140,22 @@ describe("esquema y prompt del agente", () => {
   });
 
   // 019: reescrito. `offer_slots` y `book_slot{startUtc}` dejaron de ser acciones
-  // del modelo: el código ofrece y el modelo elige por número de opción.
-  it("con la agenda encendida el modelo usa update_draft, book_slot{option} y my_bookings", () => {
+  // del modelo: el código ofrece y el modelo elige por hora o posición.
+  it("con la agenda encendida el modelo usa update_draft, book_slot{time|day|option}, greeting y my_bookings", () => {
     const on = agentActionSchema(true);
     expect(on.safeParse({ action: "offer_slots" }).success).toBe(false);
-    expect(
-      on.safeParse({ action: "book_slot", startUtc: "2026-08-05T15:00:00.000Z" }).success
-    ).toBe(false);
+    // Un instante inventado no pasa: el esquema lo descarta y la guarda pide la hora.
+    const invented = on.safeParse({ action: "book_slot", startUtc: "2026-08-05T15:00:00.000Z" });
+    expect(invented.success).toBe(true);
+    if (invented.success) {
+      expect(invented.data).not.toHaveProperty("startUtc");
+      expect(invented.data).toEqual({
+        action: "book_slot",
+        time: undefined,
+        day: undefined,
+        option: undefined,
+      });
+    }
 
     const draft = on.safeParse({
       action: "update_draft",
@@ -169,8 +178,37 @@ describe("esquema y prompt del agente", () => {
     const booked = on.safeParse({ action: "book_slot", option: "2" });
     expect(booked.success).toBe(true);
     if (booked.success) expect(booked.data).toEqual({ action: "book_slot", option: 2 });
+    const byTime = on.safeParse({ action: "book_slot", time: "9:30", day: "mañana", option: null });
+    expect(byTime.success).toBe(true);
+    if (byTime.success) {
+      expect(byTime.data).toEqual({ action: "book_slot", time: "09:30", day: "mañana" });
+    }
+    expect(on.safeParse({ action: "greeting" }).success).toBe(true);
+    expect(agentActionSchema(false).safeParse({ action: "greeting" }).success).toBe(false);
     expect(on.safeParse({ action: "my_bookings" }).success).toBe(true);
     expect(on.safeParse({ action: "handoff", reason: "llegada" }).success).toBe(true);
+  });
+
+  it("con la agenda encendida el prompt pide tono de recepcionista y reservar por hora", () => {
+    const on = buildAgentSystemPrompt({
+      profile,
+      kb: [],
+      stages: [{ name: "Nuevo" }],
+      agenda: true,
+      catalog,
+    });
+    expect(on).toContain("de tú");
+    expect(on).toContain("sin jerga");
+    expect(on).toContain('"te late"');
+    expect(on).toContain('{"action":"greeting"}');
+    expect(on).toContain('{"action":"book_slot","time":"HH:mm"');
+    expect(on).toContain("Embudo de la reserva");
+    // Las reglas de v1 que sostienen la evaluación siguen ahí.
+    expect(on).toContain("NUNCA calcules fechas");
+    expect(on).toContain("La disponibilidad NO la decides tú");
+    expect(on).toContain("texto literal en service");
+    // El modelo ya no redacta los pasos del flujo.
+    expect(on).not.toContain('"reply":"..."} — registrar');
   });
 
   it("con la bandera apagada el prompt no gasta tokens de agenda ni de catálogo", () => {

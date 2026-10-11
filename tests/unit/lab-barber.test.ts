@@ -138,6 +138,33 @@ describe("ai-mock drives the barber contract", () => {
     expect(mock("la tercera", { options })).toEqual({ action: "book_slot", option: 3 });
   });
 
+  it("picks the offered slot by the time the client says", () => {
+    const options = [
+      "mañana lunes 12 de octubre 09:00",
+      "mañana lunes 12 de octubre 09:30",
+      "mañana lunes 12 de octubre 10:00",
+    ];
+    expect(mock("a las 9:30", { options })).toEqual({ action: "book_slot", time: "09:30" });
+    expect(mock("el de las 10", { options })).toEqual({ action: "book_slot", time: "10:00" });
+    expect(mock("mañana a las 9", { options })).toEqual({
+      action: "book_slot",
+      time: "09:00",
+      day: "mañana",
+    });
+  });
+
+  it("a time that was not offered is a new preference, not a pick", () => {
+    const options = ["mañana lunes 12 de octubre 09:00", "mañana lunes 12 de octubre 09:30"];
+    expect(mock("mejor a las 5", { options })).toMatchObject({
+      action: "update_draft",
+      when: { from: "17:00" },
+    });
+  });
+
+  it("a plain greeting is the greeting action", () => {
+    expect(mock("hola buenas")).toEqual({ action: "greeting" });
+  });
+
   it("does not pick an option when none is on offer", () => {
     expect(mock("la segunda opción").action).not.toBe("book_slot");
   });
@@ -156,8 +183,8 @@ describe("ai-mock drives the barber contract", () => {
     expect(mock("¿dónde están ubicados?").action).toBe("reply");
   });
 
-  it("a plain greeting is a reply, 'tarde' as a time of day is not a late arrival", () => {
-    expect(mock("hola buenas").action).toBe("reply");
+  it("a plain greeting is a greeting, 'tarde' as a time of day is not a late arrival", () => {
+    expect(mock("hola buenas").action).toBe("greeting");
     expect(mock("Fade el viernes en la tarde").action).toBe("update_draft");
   });
 });
@@ -206,7 +233,7 @@ async function seedBooking(isTest = true) {
   `);
 }
 
-const CONFIRMATION = "✅ Cita confirmada\n✂️ Fade · con Charly\n📅 Lunes 12 de octubre, 14:30 (45 min)\n\nTe recomendamos llegar 5 minutos antes.";
+const CONFIRMATION = "¡Listo, tu cita quedó agendada!\n\n✂️ Fade · con Charly\n📅 Lunes 12 de octubre, 2:30 p. m. (45 min)\n\nTe recomendamos llegar 5 minutos antes. ¡Te esperamos!";
 
 describeDb("barber lab judge (real DB)", () => {
   it.each(Object.entries(HANDOFF_PERSONAS))("%s is green only with handoff reason %s", async (key, reason) => {

@@ -87,3 +87,24 @@ describe("catálogo de monedas", () => {
     expect(isCurrency(null)).toBe(false);
   });
 });
+
+describe("formatPriceShort (WhatsApp wording)", () => {
+  it("groups thousands for the currency's locale and drops zero decimals", async () => {
+    const { formatPriceShort } = await import("@/lib/money");
+    expect(formatPriceShort(2_500_000, "COP")).toBe("$25.000 COP");
+    expect(formatPriceShort(25_000, "MXN")).toBe("$250 MXN");
+    expect(formatPriceShort(150_000, "MXN")).toBe("$1,500 MXN");
+  });
+
+  it("keeps cents only when the currency has them and the amount needs them", async () => {
+    const { formatPriceShort } = await import("@/lib/money");
+    expect(formatPriceShort(15_050, "MXN")).toBe("$150.50 MXN");
+    // COP has no minor unit: a stray cent never prints decimals.
+    expect(formatPriceShort(2_500_050, "COP")).toBe("$25.001 COP");
+  });
+
+  it("returns null for a free service", async () => {
+    const { formatPriceShort } = await import("@/lib/money");
+    expect(formatPriceShort(0, "MXN")).toBeNull();
+  });
+});

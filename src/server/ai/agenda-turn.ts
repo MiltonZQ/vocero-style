@@ -1,4 +1,6 @@
-import type { schema } from "@/lib/db";
+import { eq } from "drizzle-orm";
+import { getDb, schema } from "@/lib/db";
+import { dayIsoInTz, dayLabelInTz, timeInTz } from "@/lib/time/slots";
 import type { AgendaCatalog, AgendaCatalogService } from "@/server/agenda/agent";
 import { bookFromOffer } from "@/server/agenda/agent";
 import { AgendaHttpError } from "@/server/agenda/http";
@@ -6,7 +8,9 @@ import { BookingError } from "@/server/agenda/booking-error";
 import {
   buildCatalogMessage,
   buildConfirmation,
+  buildGreetingMessage,
   buildStaffChoiceMessage,
+  joinNatural,
 } from "@/server/agenda/confirmation";
 import {
   clearDraft,
@@ -24,8 +28,15 @@ import {
   existingBookingNotice,
   listUpcomingBookings,
 } from "@/server/agenda/my-bookings";
+import { matchOffer } from "@/server/agenda/offer-match";
 import { clearOffers, getOffers, type OfferedSlot } from "@/server/agenda/offers";
-import { offerByPreference, SHOWN_OPTIONS } from "@/server/agenda/preference-offers";
+import {
+  OFFER_QUESTION,
+  offerByPreference,
+  renderSlotSentences,
+  SHOWN_OPTIONS,
+  type SlotView,
+} from "@/server/agenda/preference-offers";
 import { getSettings, type CalendarSettings } from "@/server/agenda/settings";
 import type { AgentActionType } from "@/server/ai/actions";
 import { guardAction, type BotAction, type Directive } from "@/server/ai/guards";
@@ -34,11 +45,11 @@ import { buildDraftStateBlock } from "@/server/ai/prompts";
 /**
  * 019 — El turno del bot de barbería, del lado del CÓDIGO.
  *
- * El modelo solo dice qué decidió el cliente (`update_draft`) y qué opción
- * numerada eligió (`book_slot`). Aquí se resuelven los nombres contra el
- * catálogo, se guarda el borrador, se avanza al paso que falta y se redactan
- * los mensajes: lo que el cliente lee de horarios, precios y confirmación
- * nunca lo escribe el modelo.
+ * El modelo solo dice qué decidió el cliente (`update_draft`) y qué horario
+ * eligió, por hora o por posición (`book_slot`). Aquí se resuelven los nombres
+ * contra el catálogo, se guarda el borrador, se avanza al paso que falta y se
+ * redactan los mensajes: lo que el cliente lee de servicios, horarios, precios
+ * y confirmación nunca lo escribe el modelo (su `reply` no se antepone).
  *
  * Un turno envía A LO MÁS un mensaje (como el agente de siempre): los
  * manejadores devuelven texto y `runAgendaAction` lo entrega una vez.
@@ -55,7 +66,6 @@ const STUCK_TEXT =
   "No estoy logrando ayudarte con esto por aquí. Te paso con alguien del equipo para que te atienda.";
 const GENERIC_ERROR_TEXT =
   "No pude agendarlo en este momento. Lo reviso con el equipo y te confirmo.";
-const PICK_TEXT = "Responde con el número de la opción que prefieras, o dime otro día u hora.";
 
 export type AgendaDeps = {
   deliver(text: string): Promise<void>;
@@ -72,6 +82,8 @@ export type AgendaState = {
 
 export type AgendaContext = {
   conversation: Conversation;
+  /** Nombre del negocio para la bienvenida; null si no tiene. */
+  businessName: string | null;
   catalog: AgendaCatalog;
   settings: CalendarSettings;
   now: Date;
@@ -134,11 +146,37 @@ function whenText(when: DraftWhen | null | undefined): string | null {
   return text || null;
 }
 
-function offerLines(offers: readonly { label: string; staffName?: string | null }[]): string {
-  return offers
-    .slice(0, SHOWN_OPTIONS)
-    .map((o, i) => `${i + 1}) ${o.label}${o.staffName ? ` con ${o.staffName}` : ""}`)
-    .join("\n");
+/** Lo ofrecido tal como lo lee el cliente: día en palabras y hora local. */
+function slotViews(
+  offers: readonly { startUtc: string; staffName?: string | null }[],
+  ctx: AgendaContext
+): SlotView[] {
+  const tz = ctx.settings.timezone;
+  return offers.slice(0, SHOWN_OPTIONS).map((o) => ({
+    dayIso: dayIsoInTz(new Date(o.startUtc), tz),
+    dayLabel: dayLabelInTz(o.startUtc, tz, ctx.now),
+    time: timeInTz(o.startUtc, tz),
+    staffName: o.staffName ?? null,
+  }));
+}
+
+/** ¿Hay que nombrar al profesional en cada hora? Solo si no es el que el cliente eligió. */
+function needsNames(offers: readonly OfferedSlot[], staffChoice: string | null | undefined): boolean {
+  if (staffChoice && staffChoice !== "any" && offers.some((o) => o.staffId && o.staffId !== staffChoice)) {
+    return true;
+  }
+  return new Set(offers.map((o) => o.staffName).filter(Boolean)).size > 1;
+}
+
+/** Los horarios ya ofrecidos, dichos otra vez en lenguaje natural. */
+function offersText(
+  offers: readonly OfferedSlot[],
+  staffChoice: string | null | undefined,
+  ctx: AgendaContext
+): string {
+  const shown = offers.slice(0, SHOWN_OPTIONS);
+  const views = slotViews(shown, ctx);
+  return `${renderSlotSentences(views, { showNames: needsNames(shown, staffChoice) })} ${OFFER_QUESTION}`;
 }
 
 /** El bloque que el modelo ve al final de la conversación. */
@@ -158,9 +196,11 @@ export function renderDraftState(state: AgendaState, ctx: AgendaContext): string
     serviceName: service?.name ?? null,
     staffLabel,
     whenLabel: whenText(draft?.when),
-    options: state.offers
-      .slice(0, SHOWN_OPTIONS)
-      .map((o) => `${o.label}${o.staffName ? ` · ${o.staffName}` : ""}`),
+    options: slotViews(state.offers, ctx).map(
+      (v, i) =>
+        // El modelo ve el día, la hora de 24 h (la que debe devolver) y quién.
+        `${v.dayLabel.replace(/,/g, "")} ${v.time}${state.offers[i]?.staffName ? ` · ${state.offers[i]?.staffName}` : ""}`
+    ),
   });
 }
 
@@ -206,7 +246,7 @@ async function offerMessage(
     notice,
     now,
   });
-  return opts.prefix ? `${opts.prefix}\n\n${turn.text}` : turn.text;
+  return opts.prefix ? `${opts.prefix} ${turn.text}` : turn.text;
 }
 
 /** Vuelve a preguntar el paso en el que está la conversación. */
@@ -225,28 +265,18 @@ export async function askCurrentStep(
       body = service
         ? buildStaffChoiceMessage(
             service.name,
-            service.staff.map((p) => ({ name: p.displayName }))
+            service.staff.map((p) => ({ name: p.displayName })),
+            { intro: !opts.prefix }
           )
         : buildCatalogMessage(bookable(ctx.catalog));
       break;
     case "need_slot":
       return offerMessage(state, ctx, opts);
     case "ready":
-      body = `${offerLines(state.offers)}\n\n${PICK_TEXT}`;
+      body = offersText(state.offers, state.draft?.staffChoice, ctx);
       break;
   }
-  return opts.prefix ? `${opts.prefix}\n\n${body}` : body;
-}
-
-/** Un reply corto y sin cifras: puede abrir el mensaje del código. */
-function usableIntro(reply: string | null | undefined): string | null {
-  const text = reply?.trim();
-  if (!text || text.length > 90 || /\d|\n/.test(text)) return null;
-  return text;
-}
-
-function names(items: readonly { name: string }[]): string {
-  return items.map((i) => i.name).join(", ");
+  return opts.prefix ? `${opts.prefix} ${body}` : body;
 }
 
 /* ---------------------------- handlers ---------------------------- */
@@ -282,9 +312,9 @@ async function handleUpdateDraft(
         }
       }
     } else if (match.kind === "many") {
-      blocking = `¿Cuál de estos servicios te interesa?\n${match.items.map((i) => `• ${i.name}`).join("\n")}`;
+      blocking = `¿Cuál de estos servicios te interesa: ${joinNatural(match.items.map((i) => i.name), "o")}?`;
     } else {
-      const hint = match.closest ? `¿Quisiste decir ${match.closest.name}?\n\n` : "";
+      const hint = match.closest ? `¿Quisiste decir ${match.closest.name}? ` : "";
       blocking = `Por ahora no ofrecemos «${askedService}». ${hint}${buildCatalogMessage(services)}`;
     }
   }
@@ -304,12 +334,12 @@ async function handleUpdateDraft(
         if (service.staff.some((p) => p.id === match.item.id)) {
           staffChoice = match.item.id;
         } else {
-          blocking = `${match.item.name} no hace ${service.name}. Lo hacen: ${names(staffList)}.\n\n${buildStaffChoiceMessage(service.name, staffList)}`;
+          blocking = `${match.item.name} no hace ${service.name}. ${buildStaffChoiceMessage(service.name, staffList, { intro: false })}`;
         }
       } else if (match.kind === "many") {
-        blocking = `¿Con cuál de ellos?\n${match.items.map((i) => `• ${i.name}`).join("\n")}`;
+        blocking = `Contamos con ${joinNatural(match.items.map((i) => i.name))}. ¿Con cuál de ellos deseas ser atendido?`;
       } else {
-        blocking = `No encontré a «${askedStaff}» en el equipo.\n\n${buildStaffChoiceMessage(service.name, staffList)}`;
+        blocking = `No encontré a «${askedStaff}» en el equipo. ${buildStaffChoiceMessage(service.name, staffList, { intro: false })}`;
       }
     }
   }
@@ -320,7 +350,7 @@ async function handleUpdateDraft(
     if (only) {
       staffChoice = only.id;
       // En un negocio de un solo profesional no hay nadie más a quien nombrar.
-      if (!ctx.catalog.singleStaff) notes.push(`${service.name} lo hace ${only.displayName}.`);
+      if (!ctx.catalog.singleStaff) notes.push(`Para ${service.name} te atenderá ${only.displayName}.`);
     }
   }
 
@@ -340,7 +370,7 @@ async function handleUpdateDraft(
     // Lo ofrecido respondía al borrador anterior.
     await clearOffers(organizationId, conversationId);
   }
-  if (blocking) return [...notes, blocking].join("\n");
+  if (blocking) return [...notes, blocking].join(" ");
 
   const next: AgendaState = {
     draft: {
@@ -360,8 +390,8 @@ async function handleUpdateDraft(
     { hasOffers: next.offers.length > 0 }
   );
 
-  const intro = notes.length === 0 ? usableIntro(action.reply) : null;
-  const prefix = [...notes, ...(intro ? [intro] : [])].join(" ");
+  // El `reply` del modelo no se antepone: el cliente lee solo texto del código.
+  const prefix = notes.join(" ");
   return askCurrentStep(next, ctx, {
     ...(prefix ? { prefix } : {}),
     // Cambiar el borrador vacía la oferta, pero el aviso ya se dio la primera vez.
@@ -370,13 +400,35 @@ async function handleUpdateDraft(
 }
 
 async function handleBookSlot(
-  option: number,
+  action: Extract<AgentActionType, { action: "book_slot" }>,
   state: AgendaState,
   ctx: AgendaContext
 ): Promise<{ booked: boolean; text: string }> {
   const { conversation, catalog, settings } = ctx;
-  const picked = state.offers[option - 1];
-  if (!picked) return { booked: false, text: await askCurrentStep(state, ctx) };
+  // Solo se puede elegir lo que el cliente alcanzó a leer.
+  const shown = state.offers.slice(0, SHOWN_OPTIONS);
+  const match = matchOffer(
+    shown,
+    {
+      ...(action.time ? { time: action.time } : {}),
+      ...(action.day ? { day: action.day } : {}),
+      ...(action.option !== undefined ? { option: action.option } : {}),
+    },
+    {
+      timezone: settings.timezone,
+      minNoticeHours: settings.minNoticeHours,
+      maxDaysAhead: settings.maxDaysAhead,
+      now: ctx.now,
+    }
+  );
+  const picked = match.kind === "one" ? shown[match.index] : undefined;
+  if (!picked) {
+    const prefix =
+      match.kind === "many"
+        ? "Tenemos ese horario en más de un día."
+        : "No tenemos disponible ese horario.";
+    return { booked: false, text: await askCurrentStep(state, ctx, { prefix }) };
+  }
   try {
     const booked = await bookFromOffer({
       organizationId: conversation.organizationId,
@@ -410,7 +462,7 @@ async function handleBookSlot(
       if (err.code === "slot_taken" && err.slots.length > 0) {
         return {
           booked: false,
-          text: `Ese horario se acaba de ocupar. Estas son las opciones más cercanas:\n${offerLines(err.slots)}\n\n${PICK_TEXT}`,
+          text: `Ese horario se acaba de ocupar. ${offersText(err.slots, state.draft?.staffChoice, ctx)}`,
         };
       }
       const fresh = await loadAgendaState(ctx);
@@ -429,6 +481,17 @@ async function handleBookSlot(
     if (err instanceof AgendaHttpError) return { booked: false, text: GENERIC_ERROR_TEXT };
     throw err;
   }
+}
+
+/** Saludo: bienvenida si aún no hay servicio; si ya hay flujo, retoma el paso. */
+async function handleGreeting(state: AgendaState, ctx: AgendaContext): Promise<string> {
+  if (state.step === "need_service") {
+    return buildGreetingMessage({
+      businessName: ctx.businessName,
+      services: bookable(ctx.catalog),
+    });
+  }
+  return askCurrentStep(state, ctx);
 }
 
 async function handleMyBookings(ctx: AgendaContext): Promise<string> {
@@ -460,7 +523,7 @@ async function textForDirective(
     case "offer_slots":
       return askCurrentStep({ ...state, step: "need_slot", offers: [] }, ctx);
     case "ask_option":
-      return askCurrentStep(state, ctx, { prefix: "No encontré esa opción." });
+      return askCurrentStep(state, ctx, { prefix: "No logré identificar cuál horario prefieres." });
   }
 }
 
@@ -510,7 +573,7 @@ export async function runAgendaAction(
     } else if (action.action === "update_draft") {
       text = await handleUpdateDraft(action, before, ctx);
     } else if (action.action === "book_slot") {
-      const result = await handleBookSlot(action.option, before, ctx);
+      const result = await handleBookSlot(action, before, ctx);
       if (result.booked) {
         await clearDraft(ctx.conversation.organizationId, ctx.conversation.id);
         await deps.deliver(result.text);
@@ -518,6 +581,8 @@ export async function runAgendaAction(
         return { kind: "sent" };
       }
       text = result.text;
+    } else if (action.action === "greeting") {
+      text = await handleGreeting(before, ctx);
     } else if (action.action === "my_bookings") {
       text = await handleMyBookings(ctx);
     }
@@ -573,8 +638,14 @@ export async function loadAgendaContext(
   conversation: Conversation,
   catalog: AgendaCatalog
 ): Promise<AgendaContext> {
+  const [org] = await getDb()
+    .select({ name: schema.organization.name })
+    .from(schema.organization)
+    .where(eq(schema.organization.id, conversation.organizationId))
+    .limit(1);
   return {
     conversation,
+    businessName: org?.name?.trim() || null,
     catalog,
     settings: await getSettings(conversation.organizationId),
     now: new Date(),

@@ -6,6 +6,7 @@ import { getSettings } from "@/server/agenda/settings";
 import { spreadByDay, type SpreadSlot } from "@/server/agenda/spread";
 import { resolveWhen, type WhenSettings } from "@/server/agenda/when";
 import { timeInTz } from "@/lib/time/slots";
+import { formatClock12, joinNatural } from "@/server/agenda/confirmation";
 
 /**
  * 019 — Offers by preferred day and hours.
@@ -170,56 +171,109 @@ export type OffersMessageOptions = WhenSettings & {
   notice?: string | null;
 };
 
-function header(plan: PreferencePlan, opts: OffersMessageOptions): string {
+/** What the client reads for one offered time. */
+export type SlotView = {
+  dayIso: string;
+  /** "mañana lunes, 12 de octubre" (as `dayLabelInTz` writes it). */
+  dayLabel: string;
+  /** "HH:mm" in the shop's timezone. */
+  time: string;
+  staffName?: string | null;
+};
+
+export const OFFER_QUESTION =
+  "¿Cuál de estos horarios prefieres, o deseas que consultemos otra fecha?";
+
+/** "mañana lunes 12 de octubre" / "el martes 13 de octubre". */
+function spokenDay(dayLabel: string): string {
+  const plain = dayLabel.replace(/,/g, "").trim();
+  return /^(hoy|mañana)\b/.test(plain) ? plain : `el ${plain}`;
+}
+
+/**
+ * The offered times as sentences, grouped by day:
+ * "Para mañana lunes 12 de octubre tenemos disponible a las 9:00 a. m. y 9:30 a. m.
+ *  Para el martes 13 de octubre, a las 10:00 a. m."
+ * `nearest` is the wording for alternatives outside what the client asked.
+ */
+export function renderSlotSentences(
+  slots: readonly SlotView[],
+  opts: { showNames?: boolean; nearest?: boolean } = {}
+): string {
+  const days = new Map<string, { label: string; items: SlotView[] }>();
+  for (const slot of slots) {
+    const day = days.get(slot.dayIso);
+    if (day) day.items.push(slot);
+    else days.set(slot.dayIso, { label: slot.dayLabel, items: [slot] });
+  }
+  return [...days.values()]
+    .map((day, i) => {
+      const times = joinNatural(
+        day.items.map(
+          (s) =>
+            `${formatClock12(s.time)}${opts.showNames && s.staffName ? ` con ${s.staffName}` : ""}`
+        )
+      );
+      // "p. m." already ends in a period: never double it.
+      const stop = times.endsWith(".") ? "" : ".";
+      const first = day.items[0];
+      const article =
+        day.items.length === 1 && first && Number(first.time.slice(0, 2)) % 12 === 1
+          ? "a la"
+          : "a las";
+      const when = spokenDay(day.label);
+      if (i > 0) return `Para ${when}, ${article} ${times}${stop}`;
+      return opts.nearest
+        ? `Lo más cercano es para ${when}, ${article} ${times}${stop}`
+        : `Para ${when} tenemos disponible ${article} ${times}${stop}`;
+    })
+    .join(" ");
+}
+
+function header(plan: PreferencePlan, opts: OffersMessageOptions): string | null {
   const label = plan.fallback?.label ?? plan.windowLabel;
   const nothing = opts.staffName
-    ? `Con ${opts.staffName} no tengo horarios ${label}.`
-    : `No tengo horarios ${label}.`;
+    ? `Con ${opts.staffName} no tenemos horarios disponibles para ${label}.`
+    : `No tenemos horarios disponibles para ${label}.`;
   switch (plan.kind) {
     case "match":
-      return label ? `Para ${label} tengo:` : "Estos son los horarios más cercanos:";
+      return null;
     case "fallback_other_staff":
-      return `${nothing} Estos barberos sí tienen:`;
+      return nothing;
     case "fallback_nearest":
       switch (plan.fallback?.reason) {
         case "past":
           return opts.minNoticeHours > 0
-            ? `Ese día u hora ya no es posible: necesitamos al menos ${opts.minNoticeHours} h de anticipación. Lo más cercano disponible es:`
-            : "Ese día u hora ya pasó. Lo más cercano disponible es:";
+            ? `Para esa fecha ya no es posible agendar: necesitamos al menos ${opts.minNoticeHours} h de anticipación.`
+            : "Esa fecha u hora ya pasó.";
         case "too_far":
-          return `Solo agendamos con hasta ${opts.maxDaysAhead} días de anticipación. Lo más cercano disponible es:`;
+          return `Solo agendamos con hasta ${opts.maxDaysAhead} días de anticipación.`;
         case "invalid":
-          return "No logré entender ese día u hora. Estos son los horarios más cercanos:";
+          return "No logré entender esa fecha u hora.";
         default:
-          return `${nothing} Lo más cercano disponible es:`;
+          return nothing;
       }
     case "none":
-      return "Por ahora no me quedan horarios libres. Déjame confirmarlo con el equipo y te aviso.";
+      return "Por ahora no tenemos horarios disponibles. Lo confirmo con el equipo y te avisamos.";
   }
 }
 
-function joinNames(names: string[]): string {
-  if (names.length <= 1) return names[0] ?? "";
-  return `${names.slice(0, -1).join(", ")} y ${names[names.length - 1]}`;
-}
-
-/** The text of the offer. Options are numbered: the client picks by number. */
+/** The offer in natural language: the client answers with a time, not a number. */
 export function buildOffersMessage(plan: PreferencePlan, opts: OffersMessageOptions): string {
-  if (plan.kind === "none") return header(plan, opts);
-  const showNames = plan.kind === "fallback_other_staff";
-  const lines = plan.slots.slice(0, SHOWN_OPTIONS).map((slot, i) => {
-    const who = showNames && slot.staffName ? ` con ${slot.staffName}` : "";
-    return `${i + 1}) ${slot.dayLabel} a las ${slot.time}${who}`;
+  if (plan.kind === "none") return header(plan, opts) ?? "";
+  const shown = plan.slots.slice(0, SHOWN_OPTIONS);
+  const sentences = renderSlotSentences(shown, {
+    showNames: plan.kind === "fallback_other_staff",
+    nearest: plan.kind !== "match",
   });
-  const parts = [header(plan, opts), ...lines];
+  const parts = [header(plan, opts), sentences];
   if (plan.alternativeStaffNames?.length) {
     parts.push(
-      "",
-      `Con ${joinNames(plan.alternativeStaffNames)} sí hay horarios ${plan.fallback?.label ?? ""}; dime si prefieres a alguien más.`
+      `Con ${joinNatural(plan.alternativeStaffNames)} sí tenemos horarios disponibles para ${plan.fallback?.label ?? "esa fecha"}. Si prefieres, puedo agendarte con ${joinNatural(plan.alternativeStaffNames, "o")}.`
     );
   }
-  parts.push("", "Responde con el número de la opción que prefieras, o dime otro día u hora.");
-  const body = parts.join("\n");
+  parts.push(OFFER_QUESTION);
+  const body = parts.filter(Boolean).join(" ");
   return opts.notice ? `${opts.notice}\n\n${body}` : body;
 }
 

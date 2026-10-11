@@ -157,33 +157,32 @@ async function seedBooking(contactId: string, scheduledAt: string, staffId = "st
 describeDb("barber agent turn (real DB)", () => {
   it("books step by step: service, staff, time window, option, confirmation", async () => {
     const t1 = await turn("quiero un fade", { action: "update_draft", service: "Fade" });
-    expect(t1).toContain("Para Fade");
-    expect(t1).toContain("Charly");
-    expect(t1).toContain("Cualquiera");
-    expect(t1).not.toContain("Ana");
+    expect(t1).toBe(
+      "Perfecto. Para Fade contamos con Charly y Luis. ¿Con cuál de nuestros profesionales deseas ser atendido? Si prefieres, también puedo agendarte con el primero disponible."
+    );
 
     const t2 = await turn("con charly", { action: "update_draft", staff: "Charly" });
-    expect(t2).toMatch(/1\) .*a las/);
-    expect(t2).toContain("número");
+    expect(t2).toContain("tenemos disponible a las");
+    expect(t2).not.toMatch(/número|\d\) /);
 
     const t3 = await turn("mejor mañana en la tarde", {
       action: "update_draft",
       when: { day: "mañana", from: "14:00", to: "19:00" },
     });
-    expect(t3).toContain("mañana");
-    expect(t3).toContain("1) mañana lunes, 12 de octubre a las 14:00");
-    expect(t3).toContain("2) mañana lunes, 12 de octubre a las 14:30");
+    expect(t3).toBe(
+      "Para mañana lunes 12 de octubre tenemos disponible a las 2:00 p. m., 2:30 p. m. y 3:00 p. m. ¿Cuál de estos horarios prefieres, o deseas que consultemos otra fecha?"
+    );
 
-    const t4 = await turn("la segunda", { action: "book_slot", option: 2 });
-    expect(t4).toContain("Cita confirmada");
+    const t4 = await turn("a las 2:30", { action: "book_slot", time: "14:30" });
+    expect(t4).toContain("¡Listo, tu cita quedó agendada!");
     expect(t4).toContain("Fade");
     expect(t4).toContain("Charly");
-    expect(t4).toContain("Lunes 12 de octubre, 14:30");
+    expect(t4).toContain("Lunes 12 de octubre, 2:30 p. m.");
     expect(t4).toContain("45 min");
     expect(t4).toContain("$250 MXN");
     expect(t4).toContain("Av. Juárez 123, Col. Centro");
     expect(t4).toContain("https://maps.example/style");
-    expect(t4).toContain("5 minutos");
+    expect(t4).toContain("Te recomendamos llegar 5 minutos antes. ¡Te esperamos!");
 
     const bookings = await eph.run(`SELECT * FROM booking`);
     expect(bookings).toHaveLength(1);
@@ -201,15 +200,16 @@ describeDb("barber agent turn (real DB)", () => {
       staff: "luis",
       when: { day: "martes", from: "17:00" },
     });
-    expect(text).toContain("martes 13 de octubre");
-    expect(text).toContain("1) martes, 13 de octubre a las 17:00");
+    expect(text).toContain(
+      "Para el martes 13 de octubre tenemos disponible a las 5:00 p. m., 5:30 p. m. y 6:00 p. m."
+    );
     expect((await draft())?.staff_choice).toBe("st_luis");
   });
 
   it("any staff is accepted and the offers are flagged any-staff", async () => {
     await turn("fade", { action: "update_draft", service: "Fade" });
     const text = await turn("me da igual", { action: "update_draft", staff: "any" });
-    expect(text).toMatch(/1\) /);
+    expect(text).toContain("tenemos disponible a las");
     expect((await draft())?.staff_choice).toBe("any");
     const offers = await eph.run(`SELECT any_staff FROM offered_slot`);
     expect(offers.length).toBeGreaterThan(0);
@@ -219,7 +219,7 @@ describeDb("barber agent turn (real DB)", () => {
   it("asks which one when a staff name is ambiguous", async () => {
     await turn("barba", { action: "update_draft", service: "Barba" });
     const text = await turn("con char", { action: "update_draft", staff: "Char" });
-    expect(text).toContain("¿Con cuál de ellos?");
+    expect(text).toContain("¿Con cuál de ellos deseas ser atendido?");
     expect(text).toContain("Charly");
     expect(text).toContain("Charlie");
     expect((await draft())?.staff_choice).toBeNull();
@@ -232,7 +232,7 @@ describeDb("barber agent turn (real DB)", () => {
       staff: "Ana",
     });
     expect(text).toContain("Ana no hace Fade");
-    expect(text).toContain("Charly, Luis");
+    expect(text).toContain("Para Fade contamos con Charly y Luis.");
     const row = await draft();
     expect(row?.service_id).toBe("sv_fade");
     expect(row?.staff_choice).toBeNull();
@@ -241,7 +241,7 @@ describeDb("barber agent turn (real DB)", () => {
   it("says a service is not offered and shows the catalog without setting a service", async () => {
     const text = await turn("tienen tinte?", { action: "update_draft", service: "tinte" });
     expect(text).toContain("no ofrecemos «tinte»");
-    expect(text).toContain("• Fade — 45 min · $250 MXN");
+    expect(text).toContain("Contamos con Fade ($250 MXN)");
     expect((await draft())?.service_id).toBeNull();
   });
 
@@ -264,14 +264,13 @@ describeDb("barber agent turn (real DB)", () => {
       staff: "Luis",
       when: { day: "2026-10-18" },
     });
-    expect(text).toContain("Con Luis no tengo horarios");
-    expect(text).toContain("Lo más cercano disponible");
-    expect(text).toMatch(/1\) /);
+    expect(text).toContain("Con Luis no tenemos horarios disponibles");
+    expect(text).toContain("Lo más cercano es para");
   });
 
   it("the guard turns an early book_slot into the missing step", async () => {
     const text = await turn("la primera", { action: "book_slot", option: 1 });
-    expect(text).toContain("¿Qué servicio");
+    expect(text).toContain("¿En cuál de nuestros servicios estás interesado?");
     expect(await eph.run(`SELECT 1 FROM booking`)).toHaveLength(0);
   });
 
@@ -293,7 +292,8 @@ describeDb("barber agent turn (real DB)", () => {
     `);
     const text = await turn("la primera", { action: "book_slot", option: 1 });
     expect(text).toContain("se acaba de ocupar");
-    expect(text).toMatch(/1\) /);
+    expect(text).toContain("tenemos disponible");
+    expect(text).not.toMatch(/\d\) /);
     expect(await eph.run(`SELECT 1 FROM booking WHERE contact_id = 'ct1'`)).toHaveLength(0);
   });
 
@@ -301,7 +301,7 @@ describeDb("barber agent turn (real DB)", () => {
     await seedBooking("ct1", "2026-10-13 22:00");
     const text = await turn("a qué hora era mi cita", { action: "my_bookings" });
     expect(text).toContain("Fade con Charly");
-    expect(text).toContain("Martes 13 de octubre, 16:00");
+    expect(text).toContain("Martes 13 de octubre, 4:00 p. m.");
     expect(text).toContain("45 min");
     expect(text).toContain("Av. Juárez 123");
   });
@@ -361,7 +361,7 @@ describeDb("barber agent turn (real DB)", () => {
 
   it("re-asks the step on a model failure and hands off on the second in a row", async () => {
     const first = await turn("hola", "FAIL");
-    expect(first).toContain("¿Qué servicio");
+    expect(first).toContain("¿En cuál de nuestros servicios estás interesado?");
     expect((await draft())?.failed_turns).toBe(1);
     expect((await conversationRow())?.handoff_at).toBeNull();
 
@@ -418,8 +418,8 @@ describeDb("barber agent turn (real DB)", () => {
   it("auto-picks the only barber who does the service and names them in the offer", async () => {
     const text = await turn("quiero cejas", { action: "update_draft", service: "Cejas" });
     expect(text).toContain("Ana");
-    expect(text).toMatch(/1\) .*a las/);
-    expect(text).not.toContain("Cualquiera");
+    expect(text).toContain("tenemos disponible a las");
+    expect(text).not.toContain("primero disponible");
     const row = await draft();
     expect(row?.staff_choice).toBe("st_ana");
     const offers = await eph.run(`SELECT staff_id, any_staff FROM offered_slot`);
@@ -429,8 +429,105 @@ describeDb("barber agent turn (real DB)", () => {
 
   it("does not auto-pick when several barbers do the service", async () => {
     const text = await turn("quiero un fade", { action: "update_draft", service: "Fade" });
-    expect(text).toContain("Cualquiera");
+    expect(text).toContain("primero disponible");
     expect((await draft())?.staff_choice).toBeNull();
+  });
+});
+
+describeDb("barber agent turn - receptionist tone (real DB)", () => {
+  it("greets by business name and lists the services, with no booking intent", async () => {
+    const text = await turn("hola", { action: "greeting" });
+    expect(text).toBe(
+      "¡Hola! ¿Cómo estás? Te damos la bienvenida a Style. ¿En cuál de nuestros servicios estás interesado? Contamos con Fade, Corte clásico, Barba y Cejas."
+    );
+    expect((await draft())?.service_id ?? null).toBeNull();
+  });
+
+  it("an empty update_draft (wants to book, no service yet) asks which service, without welcoming", async () => {
+    const text = await turn("quiero una cita", { action: "update_draft" });
+    expect(text).toBe(
+      "¿En cuál de nuestros servicios estás interesado? Contamos con Fade ($250 MXN), Corte clásico ($200 MXN), Barba ($150 MXN) y Cejas ($80 MXN)."
+    );
+  });
+
+  it("a greeting in the middle of the flow re-asks the current step instead of welcoming again", async () => {
+    await turn("fade", { action: "update_draft", service: "Fade" });
+    const text = await turn("hola?", { action: "greeting" });
+    expect(text).toContain("Para Fade contamos con Charly y Luis.");
+    expect(text).not.toContain("bienvenida");
+  });
+
+  it("greetings are not booking turns: they never trip the stuck handoff", async () => {
+    for (let i = 0; i < 4; i++) await turn("hola", { action: "greeting" });
+    expect((await conversationRow())?.handoff_at).toBeNull();
+  });
+
+  it("never prepends the model's reply to a code-driven step message", async () => {
+    const text = await turn("quiero un fade", {
+      action: "update_draft",
+      service: "Fade",
+      reply: "¡Claro que sí! 😄",
+    });
+    expect(text).not.toContain("Claro que sí");
+    expect(text.startsWith("Perfecto. Para Fade")).toBe(true);
+  });
+
+  it("books by ordinal when the client does not say the time", async () => {
+    await turn("fade con charly mañana en la tarde", {
+      action: "update_draft",
+      service: "Fade",
+      staff: "Charly",
+      when: { day: "mañana", from: "14:00", to: "19:00" },
+    });
+    const text = await turn("el primero", { action: "book_slot", option: 1 });
+    expect(text).toContain("Lunes 12 de octubre, 2:00 p. m.");
+  });
+
+  it("books by time plus day", async () => {
+    await turn("fade con charly", { action: "update_draft", service: "Fade", staff: "Charly" });
+    const first = await eph.run(`SELECT start_utc FROM offered_slot ORDER BY start_utc LIMIT 1`);
+    expect(first).toHaveLength(1);
+    const text = await turn("mañana a las 10", { action: "book_slot", day: "mañana", time: "10:00" });
+    expect(text).toContain("Lunes 12 de octubre, 10:00 a. m.");
+  });
+
+  it("a time that was not offered re-asks naturally, listing what is available", async () => {
+    await turn("fade con charly mañana en la tarde", {
+      action: "update_draft",
+      service: "Fade",
+      staff: "Charly",
+      when: { day: "mañana", from: "14:00", to: "19:00" },
+    });
+    const text = await turn("a las 9:30", { action: "book_slot", time: "09:30" });
+    expect(text).toBe(
+      "No tenemos disponible ese horario. Para mañana lunes 12 de octubre tenemos disponible a las 2:00 p. m., 2:30 p. m. y 3:00 p. m. ¿Cuál de estos horarios prefieres, o deseas que consultemos otra fecha?"
+    );
+    expect(await eph.run(`SELECT 1 FROM booking`)).toHaveLength(0);
+  });
+
+  it("an ordinal outside the offers also re-asks naturally", async () => {
+    await turn("fade con charly", { action: "update_draft", service: "Fade", staff: "Charly" });
+    const text = await turn("el quinto", { action: "book_slot", option: 5 });
+    expect(text).toContain("tenemos disponible");
+    expect(text).not.toMatch(/\d\) |número/);
+  });
+
+  it("asks which one when a time is offered on two days", async () => {
+    await eph.run(`
+      UPDATE calendar_settings SET weekly_hours =
+        '{"mon":[{"start":"19:00","end":"20:00"}],"tue":[{"start":"19:00","end":"20:00"}],"wed":[{"start":"10:00","end":"20:00"}]}'
+      WHERE id = 'cs1'`);
+    try {
+      await turn("fade con charly", { action: "update_draft", service: "Fade", staff: "Charly" });
+      const text = await turn("a las 7", { action: "book_slot", time: "19:00" });
+      expect(text).toContain("Para mañana lunes 12 de octubre");
+      expect(await eph.run(`SELECT 1 FROM booking`)).toHaveLength(0);
+    } finally {
+      await eph.run(`
+        UPDATE calendar_settings SET weekly_hours =
+          '{"mon":${MON_HOURS},"tue":${MON_HOURS},"wed":${MON_HOURS},"thu":${MON_HOURS},"fri":${MON_HOURS},"sat":${MON_HOURS}}'
+        WHERE id = 'cs1'`);
+    }
   });
 });
 

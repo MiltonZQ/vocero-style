@@ -168,7 +168,7 @@ async function judgeAgendaCase(input: {
 
   // La confirmación la redacta el código: duración y anticipación incluidas.
   const confirmacion = input.transcript.find(
-    (turn) => turn.role === "agente" && turn.text.includes("Cita confirmada")
+    (turn) => turn.role === "agente" && turn.text.includes("tu cita quedó agendada")
   )?.text;
   if (!confirmacion) return rojo("el agente no envió la confirmación de la cita");
   if (!confirmacion.includes(`(${booking.durationMinutes} min)`)) {

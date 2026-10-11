@@ -221,21 +221,52 @@ describe("selectPreferenceSlots - unresolvable days", () => {
 
 describe("buildOffersMessage", () => {
   const msgOpts = { ...settings, staffName: null as string | null };
+  const QUESTION = "¿Cuál de estos horarios prefieres, o deseas que consultemos otra fecha?";
 
-  it("numbers the first three options", () => {
+  it("offers the first three times of a day in one natural sentence", () => {
     const plan = selectPreferenceSlots({
       when: { day: "lunes", from: "10:00", to: "12:00" },
       now: NOW,
       settings,
       slots: dayOf(MON, ["10:00", "10:30", "11:00", "11:30"]),
     });
+    expect(buildOffersMessage(plan, msgOpts)).toBe(
+      `Para mañana lunes 12 de octubre tenemos disponible a las 10:00 a. m., 10:30 a. m. y 11:00 a. m. ${QUESTION}`
+    );
+  });
+
+  it("never numbers the options or asks for a number", () => {
+    const plan = selectPreferenceSlots({
+      when: null,
+      now: NOW,
+      settings,
+      slots: MORNING_AND_EVENING,
+    });
     const text = buildOffersMessage(plan, msgOpts);
-    expect(text).toContain("el lunes 12 de octubre de 10:00 a 12:00");
-    expect(text).toMatch(/1\) .*10:00/);
-    expect(text).toMatch(/2\) .*10:30/);
-    expect(text).toMatch(/3\) .*11:00/);
-    expect(text).not.toContain("4)");
-    expect(text).toContain("número");
+    expect(text).not.toMatch(/\d\) /);
+    expect(text).not.toMatch(/número/i);
+  });
+
+  it("groups by day when the offers span several days", () => {
+    const plan = selectPreferenceSlots({
+      when: null,
+      now: NOW,
+      settings,
+      slots: [...dayOf(MON, ["19:00"]), ...dayOf(TUE, ["10:30", "16:00"])],
+    });
+    expect(buildOffersMessage(plan, msgOpts)).toBe(
+      `Para mañana lunes 12 de octubre tenemos disponible a las 7:00 p. m. Para el martes 13 de octubre, a las 10:30 a. m. y 4:00 p. m. ${QUESTION}`
+    );
+  });
+
+  it("says 'a la' for a single time at one o'clock", () => {
+    const plan = selectPreferenceSlots({
+      when: null,
+      now: NOW,
+      settings,
+      slots: dayOf(MON, ["13:00"]),
+    });
+    expect(buildOffersMessage(plan, msgOpts)).toContain("tenemos disponible a la 1:00 p. m.");
   });
 
   it("states that the window had nothing and what is offered instead", () => {
@@ -243,11 +274,12 @@ describe("buildOffersMessage", () => {
       when: { day: "miércoles" },
       now: NOW,
       settings,
-      slots: MORNING_AND_EVENING,
+      slots: dayOf(MON, ["10:00", "11:00"]),
     });
     const text = buildOffersMessage(plan, { ...msgOpts, staffName: "Charly" });
-    expect(text).toContain("Con Charly no tengo horarios el miércoles 14 de octubre");
-    expect(text).toContain("más cercano");
+    expect(text).toBe(
+      `Con Charly no tenemos horarios disponibles para el miércoles 14 de octubre. Lo más cercano es para mañana lunes 12 de octubre, a las 10:00 a. m. y 11:00 a. m. ${QUESTION}`
+    );
   });
 
   it("explains the booking horizon for too_far", () => {
@@ -257,7 +289,7 @@ describe("buildOffersMessage", () => {
       settings,
       slots: MORNING_AND_EVENING,
     });
-    expect(buildOffersMessage(plan, msgOpts)).toContain("7 días");
+    expect(buildOffersMessage(plan, msgOpts)).toContain("7 días de anticipación");
   });
 
   it("explains the notice for past", () => {
@@ -270,7 +302,7 @@ describe("buildOffersMessage", () => {
     expect(buildOffersMessage(plan, msgOpts)).toMatch(/ya pasó|anticipación/);
   });
 
-  it("names the staff on each line when another barber is offered", () => {
+  it("names the staff on each time when another professional is offered", () => {
     const plan = selectPreferenceSlots({
       when: { day: "martes" },
       now: NOW,
@@ -279,8 +311,8 @@ describe("buildOffersMessage", () => {
       otherStaffSlots: dayOf(TUE, ["12:00"], "st_luis", "Luis"),
     });
     const text = buildOffersMessage(plan, { ...msgOpts, staffName: "Charly" });
-    expect(text).toContain("Con Charly no tengo horarios");
-    expect(text).toContain("con Luis");
+    expect(text).toContain("Con Charly no tenemos horarios disponibles");
+    expect(text).toContain("12:00 p. m. con Luis");
   });
 
   it("mentions other free staff without making them bookable options", () => {
@@ -292,14 +324,19 @@ describe("buildOffersMessage", () => {
       otherStaffSlots: dayOf(WED, ["12:00"], "st_luis", "Luis"),
     });
     const text = buildOffersMessage(plan, { ...msgOpts, staffName: "Charly" });
-    expect(text).toContain("Luis");
-    expect(text.match(/\d\) /g)).toHaveLength(3);
+    expect(text).toContain("Si prefieres, puedo agendarte con Luis");
+    expect(text).not.toContain("12:00 p. m.");
   });
 
   it("puts the existing-booking notice first", () => {
     const plan = selectPreferenceSlots({ when: null, now: NOW, settings, slots: MORNING_AND_EVENING });
     const text = buildOffersMessage(plan, { ...msgOpts, notice: "Ya tienes una cita." });
-    expect(text.startsWith("Ya tienes una cita.")).toBe(true);
+    expect(text.startsWith("Ya tienes una cita.\n\n")).toBe(true);
+  });
+
+  it("tells the client there is nothing when nothing could be offered", () => {
+    const plan = selectPreferenceSlots({ when: null, now: NOW, settings, slots: [] });
+    expect(buildOffersMessage(plan, msgOpts)).toMatch(/no tenemos horarios disponibles/);
   });
 });
 

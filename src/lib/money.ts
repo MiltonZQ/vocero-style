@@ -92,3 +92,40 @@ export function parseMoneyToCents(input: string): number | null {
       (soloDigitos.startsWith("-") ? -1 : 1);
   return Number.isFinite(cents) ? Math.trunc(cents) : null;
 }
+
+/** Locale whose digit grouping matches how each currency is written locally. */
+const PRICE_LOCALE: Record<string, string> = {
+  COP: "es-CO",
+  ARS: "es-AR",
+  CLP: "es-CL",
+  PEN: "es-PE",
+  EUR: "es-ES",
+  BRL: "pt-BR",
+};
+const PRICE_SYMBOL: Record<string, string> = { EUR: "€", BRL: "R$" };
+
+/**
+ * Precio para un mensaje de WhatsApp: "$25.000 COP", "$250 MXN", "$150.50 MXN".
+ * El agrupador de miles sigue a la moneda; los decimales solo salen cuando la
+ * moneda los tiene y el monto los necesita. `null` si el servicio no cuesta.
+ */
+export function formatPriceShort(cents: number, currency: string): string | null {
+  if (cents <= 0) return null;
+  const amount = cents / 100;
+  const locale = PRICE_LOCALE[currency] ?? "es-MX";
+  let minorDigits = 2;
+  try {
+    minorDigits = new Intl.NumberFormat("en", { style: "currency", currency }).resolvedOptions()
+      .maximumFractionDigits as number;
+  } catch {
+    // Código de moneda que el runtime no conoce: se asume la unidad menor de 2.
+  }
+  const shown = minorDigits === 0 ? Math.round(amount) : amount;
+  const decimals = Number.isInteger(shown) ? 0 : minorDigits;
+  const digits = new Intl.NumberFormat(locale, {
+    useGrouping: "always",
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  } as Intl.NumberFormatOptions).format(shown);
+  return `${PRICE_SYMBOL[currency] ?? "$"}${digits} ${currency}`;
+}

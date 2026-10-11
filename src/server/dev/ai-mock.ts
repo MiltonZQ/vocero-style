@@ -48,9 +48,9 @@ export function aiMockCompletion(messages: InMessage[]): string {
   /**
    * 019 — La agenda, ejercitando el camino REAL.
    *
-   * El mock lee el MISMO bloque de estado que ve un modelo de verdad (opciones
-   * numeradas al final de la conversación) y elige por número, igual que el
-   * contrato exige. Si ese bloque deja de llegar, aquí no hay opciones que
+   * El mock lee el MISMO bloque de estado que ve un modelo de verdad (horarios
+   * ofrecidos al final de la conversación) y elige por la hora que dijo el
+   * cliente, o por posición, igual que el contrato exige. Si ese bloque deja de llegar, aquí no hay opciones que
    * elegir y la reserva falla en vez de simularse.
    */
   const stateBlock = [...messages]
@@ -99,6 +99,8 @@ function listedStaff(systemText: string): string[] {
 
 type MockTurn =
   | { action: "book_slot"; option: number }
+  | { action: "book_slot"; time: string; day?: string }
+  | { action: "greeting" }
   | { action: "my_bookings" }
   | { action: "handoff"; reason: string }
   | { action: "reply"; text: string }
@@ -162,9 +164,23 @@ function barberTurn(
   }
 
   const hasOptions = /^\s+1\) /m.test(stateBlock);
-  if (hasOptions && /primer|segund|tercer|\bla [123]\b|opcion [123]|confirmo|me sirve|\bese\b|\besa\b/.test(folded)) {
-    const option = /tercer|[3]/.test(folded) ? 3 : /segund|[2]/.test(folded) ? 2 : 1;
-    return { action: "book_slot", option };
+  if (hasOptions) {
+    // Por la hora: solo si es una de las ofrecidas (si no, es otra preferencia).
+    const offered = [...stateBlock.matchAll(/^\s+\d\) .*?(\d{2}:\d{2})/gm)].map((m) => m[1]!);
+    const clock = /(?:\ba las |\blas )(\d{1,2})(?::(\d{2}))?\b|\b(\d{1,2}):(\d{2})\b/.exec(folded);
+    if (clock) {
+      let hour = Number(clock[1] ?? clock[3]);
+      if (hour <= 7) hour += 12; // the shop opens at 10:00
+      const time = `${String(hour).padStart(2, "0")}:${clock[2] ?? clock[4] ?? "00"}`;
+      if (offered.includes(time)) {
+        const day = dayFrom(folded);
+        return { action: "book_slot", time, ...(day ? { day } : {}) };
+      }
+    }
+    if (/primer|segund|tercer|\bla [123]\b|opcion [123]|confirmo|me sirve|\bese\b|\besa\b/.test(folded)) {
+      const option = /tercer|[3]/.test(folded) ? 3 : /segund|[2]/.test(folded) ? 2 : 1;
+      return { action: "book_slot", option };
+    }
   }
 
   if (/donde|direccion|ubicad|ubicacion|como llego/.test(folded)) {
@@ -209,10 +225,7 @@ function barberTurn(
   }
   if (/cita|agendar|agenda|horario|reserv/.test(folded)) return { action: "update_draft" };
   if (/^(?:hola|buenas|buenos|q onda|que onda|hey)/.test(folded.trim())) {
-    return {
-      action: "reply",
-      text: "¡Hola! Bienvenido a la barbería. ¿Qué servicio te gustaría agendar?",
-    };
+    return { action: "greeting" };
   }
   return null;
 }

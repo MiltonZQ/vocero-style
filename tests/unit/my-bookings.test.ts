@@ -28,7 +28,7 @@ describe("buildMyBookingsMessage", () => {
     });
     expect(text).toContain("Fade");
     expect(text).toContain("Charly");
-    expect(text).toContain("Lunes 12 de octubre, 17:00");
+    expect(text).toContain("Lunes 12 de octubre, 5:00 p. m.");
     expect(text).toContain("45 min");
     expect(text).toContain("Av. Juárez 123");
   });
@@ -51,7 +51,7 @@ describe("existingBookingNotice", () => {
   it("mentions the booking and asks whether to add another", () => {
     const text = existingBookingNotice([upcoming], "America/Mexico_City");
     expect(text).toContain("Ya tienes");
-    expect(text).toContain("Lunes 12 de octubre, 17:00");
+    expect(text).toContain("Lunes 12 de octubre, 5:00 p. m.");
     expect(text).toContain("otra adicional");
   });
 });

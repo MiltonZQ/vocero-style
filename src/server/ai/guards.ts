@@ -55,9 +55,12 @@ export function guardAction(action: BotAction, step: DraftStep, ctx: GuardContex
       if (step !== "ready" || ctx.offerCount === 0) {
         return redirect(DIRECTIVE_FOR_STEP[step === "ready" ? "need_slot" : step]);
       }
+      // Una hora o un día dichos por el cliente los resuelve el código contra lo
+      // ofrecido; la posición sola debe caer dentro de lo que se mostró.
+      if (action.time || action.day) return { kind: "run", action };
       const n = action.option;
-      if (!Number.isInteger(n) || n < 1 || n > ctx.offerCount) {
-        return redirect({ type: "ask_option", reason: `option ${String(n)} is not one of the offers` });
+      if (n === undefined || !Number.isInteger(n) || n < 1 || n > ctx.offerCount) {
+        return redirect({ type: "ask_option", reason: `no usable time or option (${String(n)})` });
       }
       return { kind: "run", action };
     }
