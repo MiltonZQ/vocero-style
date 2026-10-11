@@ -319,7 +319,8 @@ async function handleUpdateDraft(
     const only = service.staff[0];
     if (only) {
       staffChoice = only.id;
-      notes.push(`${service.name} lo hace ${only.displayName}.`);
+      // En un negocio de un solo profesional no hay nadie más a quien nombrar.
+      if (!ctx.catalog.singleStaff) notes.push(`${service.name} lo hace ${only.displayName}.`);
     }
   }
 
