@@ -33,7 +33,7 @@ function formatPrice(priceCents: number, currency: string): string | null {
 }
 
 /** "Lunes 12 de octubre, 16:00" en la zona del negocio. */
-function formatWhen(startUtc: string, timezone: string, locale: string): string {
+export function formatWhen(startUtc: string, timezone: string, locale: string): string {
   const parts = new Intl.DateTimeFormat(locale, {
     timeZone: timezone,
     weekday: "long",
