@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  datetimeLocalToUtc,
   dayLabelInTz,
   eachDateInRange,
   expandWorkingDayToUtc,
   isValidTimeZone,
   labelInTz,
+  utcToDatetimeLocal,
   overlaps,
   partsInTz,
   timeInTz,
@@ -30,6 +32,12 @@ describe("zonedWallClockToUtc — hora de pared → instante", () => {
     expect(zonedWallClockToUtc("2026-01-14", "09:00", MX)?.toISOString()).toBe(
       "2026-01-14T15:00:00.000Z"
     );
+  });
+
+  it("datetime-local 10:00 del 12 de octubre es las 16:00Z en México, no la zona del navegador", () => {
+    expect(datetimeLocalToUtc("2026-10-12T10:00", MX)).toBe("2026-10-12T16:00:00.000Z");
+    expect(utcToDatetimeLocal("2026-10-12T16:00:00.000Z", MX)).toBe("2026-10-12T10:00");
+    expect(timeInTz("2026-10-12T16:00:00.000Z", MX)).toBe("10:00");
   });
 
   it("Nueva York: la misma hora local cambia de instante al entrar el DST", () => {

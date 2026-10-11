@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { apiError, withAuth } from "@/lib/api";
 import { getDb, schema } from "@/lib/db";
 import { agendaEnabled } from "@/server/agenda/flag";
+import { getSettings } from "@/server/agenda/settings";
 
 export const dynamic = "force-dynamic";
 
@@ -25,11 +26,13 @@ export const GET = withAuth(
       .limit(1);
     const user = rows[0];
     if (!user) return apiError(401, "unauthorized", "No autenticado");
+    const enabled = agendaEnabled();
     return Response.json({
       user: { id: user.id, name: user.name, email: user.email },
       role: actor.role,
       staffId: actor.staffId,
-      agendaEnabled: agendaEnabled(),
+      agendaEnabled: enabled,
+      timezone: enabled ? (await getSettings(session.organizationId)).timezone : null,
     });
   },
   { allowStaff: true }

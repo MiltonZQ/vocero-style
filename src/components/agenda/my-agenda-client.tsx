@@ -14,9 +14,12 @@ import { formatMoneyCents } from "@/lib/money";
 import type { Role } from "@/lib/auth/roles";
 import {
   addDaysISO,
+  datetimeLocalToUtc,
   dayIsoInTz,
+  isValidTimeZone,
   timeInTz,
   todayInTz,
+  utcToDatetimeLocal,
   zonedWallClockToUtc,
 } from "@/lib/time/slots";
 
@@ -44,6 +47,8 @@ type Offered = {
 };
 
 type SlotChoice = { startUtc: string; label: string };
+
+type ClientHit = { id: string; name: string; phone: string | null };
 
 const FALLBACK_TZ = "America/Mexico_City";
 
@@ -86,7 +91,7 @@ export function MyAgendaClient() {
       return;
     }
     setStaffId(me.staffId);
-    const zone = await readTimeZone(me.role);
+    const zone = me.timezone && isValidTimeZone(me.timezone) ? me.timezone : FALLBACK_TZ;
     setTimeZone(zone);
     setFrom((current) => current || safeToday(zone));
     setPhase("ready");
@@ -250,6 +255,7 @@ export function MyAgendaClient() {
       {servicesReady && (
         <CreateSession
           staffId={staffId}
+          timeZone={timeZone}
           offered={offered}
           onCreated={() => void refresh()}
         />
@@ -309,7 +315,7 @@ export function MyAgendaClient() {
                             disabled={busy === booking.id}
                             onClick={() => {
                               setMoving((current) => (current === booking.id ? null : booking.id));
-                              setMoveAt(toDatetimeLocal(startOf(booking)));
+                              setMoveAt(utcToDatetimeLocal(startOf(booking), timeZone));
                             }}
                           >
                             Reprogramar
@@ -368,14 +374,14 @@ export function MyAgendaClient() {
                             size="sm"
                             disabled={busy === booking.id || !moveAt}
                             onClick={() => {
-                              const instant = new Date(moveAt);
-                              if (Number.isNaN(instant.getTime())) {
+                              const startUtc = datetimeLocalToUtc(moveAt, timeZone);
+                              if (!startUtc) {
                                 setListError("Indica fecha y hora.");
                                 return;
                               }
                               void act(booking.id, {
                                 action: "reschedule",
-                                startUtc: instant.toISOString(),
+                                startUtc,
                               });
                             }}
                           >
@@ -397,10 +403,12 @@ export function MyAgendaClient() {
 
 function CreateSession({
   staffId,
+  timeZone,
   offered,
   onCreated,
 }: {
   staffId: string;
+  timeZone: string;
   offered: Offered[];
   onCreated: () => void;
 }) {
@@ -408,18 +416,36 @@ function CreateSession({
   const [when, setWhen] = useState("");
   const [contactName, setContactName] = useState("");
   const [contactPhone, setContactPhone] = useState("");
+  const [clients, setClients] = useState<ClientHit[]>([]);
+  const [clientQuery, setClientQuery] = useState("");
+  const [contactId, setContactId] = useState<string | null>(null);
+  const [pickedName, setPickedName] = useState<string | null>(null);
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [alternatives, setAlternatives] = useState<SlotChoice[]>([]);
+
+  const loadClients = useCallback(async () => {
+    const res = await fetch(`/api/staff/${encodeURIComponent(staffId)}/clients`).catch(() => null);
+    if (!res?.ok) {
+      setClients([]);
+      return;
+    }
+    const data = (await res.json().catch(() => null)) as { clients?: unknown } | null;
+    setClients(parseClients(data?.clients));
+  }, [staffId]);
+
+  useEffect(() => {
+    void loadClients();
+  }, [loadClients]);
 
   async function create(startUtc: string) {
     if (!serviceId) {
       setError("Elige uno de tus servicios.");
       return;
     }
-    if (!contactName.trim() || contactPhone.trim().length < 5) {
-      setError("Indica el nombre y un teléfono del cliente.");
+    if (!contactId && (!contactName.trim() || contactPhone.trim().length < 5)) {
+      setError("Elige uno de tus clientes o indica nombre y teléfono.");
       return;
     }
     setSaving(true);
@@ -431,7 +457,9 @@ function CreateSession({
         kind: "session",
         staffId,
         serviceId,
-        contact: { name: contactName.trim(), phone: contactPhone.trim() },
+        ...(contactId
+          ? { contactId }
+          : { contact: { name: contactName.trim(), phone: contactPhone.trim() } }),
         startUtc,
         ...(notes.trim() ? { notes: notes.trim() } : {}),
       }),
@@ -448,7 +476,13 @@ function CreateSession({
     }
     setWhen("");
     setNotes("");
+    setContactId(null);
+    setPickedName(null);
+    setClientQuery("");
+    setContactName("");
+    setContactPhone("");
     setAlternatives([]);
+    void loadClients();
     onCreated();
   }
 
@@ -496,25 +530,68 @@ function CreateSession({
             value={when}
             onChange={(event) => setWhen(event.target.value)}
           />
+          <p className="text-xs text-text-3">Hora del negocio.</p>
         </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="agenda-contact">Cliente</Label>
-          <Input
-            id="agenda-contact"
-            value={contactName}
-            maxLength={120}
-            onChange={(event) => setContactName(event.target.value)}
-          />
+        <div className="space-y-1.5 md:col-span-2">
+          <Label htmlFor="agenda-client-search">Tus clientes</Label>
+          {contactId ? (
+            <div className="flex items-center justify-between gap-2 rounded-md border bg-card px-2 py-1.5 text-sm">
+              <span className="truncate">{pickedName}</span>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setContactId(null);
+                  setPickedName(null);
+                }}
+              >
+                Cambiar
+              </Button>
+            </div>
+          ) : (
+            <>
+              <Input
+                id="agenda-client-search"
+                value={clientQuery}
+                placeholder="Buscar por nombre o teléfono"
+                onChange={(event) => setClientQuery(event.target.value)}
+              />
+              <ClientChoices
+                clients={clients}
+                query={clientQuery}
+                onPick={(client) => {
+                  setContactId(client.id);
+                  setPickedName(client.name);
+                  setContactName("");
+                  setContactPhone("");
+                }}
+              />
+            </>
+          )}
         </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="agenda-phone">Teléfono</Label>
-          <Input
-            id="agenda-phone"
-            value={contactPhone}
-            maxLength={40}
-            onChange={(event) => setContactPhone(event.target.value)}
-          />
-        </div>
+        {!contactId && (
+          <>
+            <div className="space-y-1.5">
+              <Label htmlFor="agenda-contact">Cliente nuevo</Label>
+              <Input
+                id="agenda-contact"
+                value={contactName}
+                maxLength={120}
+                onChange={(event) => setContactName(event.target.value)}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="agenda-phone">Teléfono</Label>
+              <Input
+                id="agenda-phone"
+                value={contactPhone}
+                maxLength={40}
+                onChange={(event) => setContactPhone(event.target.value)}
+              />
+            </div>
+          </>
+        )}
         <div className="space-y-1.5 md:col-span-2">
           <Label htmlFor="agenda-notes">Notas</Label>
           <Textarea
@@ -544,32 +621,18 @@ function CreateSession({
         type="button"
         disabled={saving || !serviceId || !when}
         onClick={() => {
-          const instant = new Date(when);
-          if (Number.isNaN(instant.getTime())) {
+          const startUtc = datetimeLocalToUtc(when, timeZone);
+          if (!startUtc) {
             setError("Indica fecha y hora.");
             return;
           }
-          void create(instant.toISOString());
+          void create(startUtc);
         }}
       >
         {saving ? "Agendando…" : "Agendar"}
       </Button>
     </section>
   );
-}
-
-async function readTimeZone(role: Role): Promise<string> {
-  const browser = Intl.DateTimeFormat().resolvedOptions().timeZone || FALLBACK_TZ;
-  // El staff recibe 403 en ajustes del calendario. No se llama al tablero.
-  if (role === "staff") return browser;
-  const res = await fetch("/api/calendar/settings").catch(() => null);
-  if (!res?.ok) return browser;
-  const data = (await res.json().catch(() => null)) as {
-    settings?: { timezone?: unknown };
-  } | null;
-  return typeof data?.settings?.timezone === "string" && data.settings.timezone
-    ? data.settings.timezone
-    : browser;
 }
 
 function safeToday(timeZone: string): string {
@@ -606,23 +669,73 @@ function dayOf(booking: AgendaBooking, timeZone: string): string {
   }
 }
 
-function toDatetimeLocal(iso: string): string {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return "";
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-
-function parseMe(value: unknown): { role: Role; staffId: string | null } | null {
+function parseMe(value: unknown): { role: Role; staffId: string | null; timezone: string | null } | null {
   if (!value || typeof value !== "object") return null;
-  const record = value as { role?: unknown; staffId?: unknown };
+  const record = value as { role?: unknown; staffId?: unknown; timezone?: unknown };
   if (record.role !== "owner" && record.role !== "reception" && record.role !== "staff") {
     return null;
   }
   return {
     role: record.role,
     staffId: typeof record.staffId === "string" && record.staffId ? record.staffId : null,
+    timezone: typeof record.timezone === "string" && record.timezone ? record.timezone : null,
   };
+}
+
+function parseClients(value: unknown): ClientHit[] {
+  if (!Array.isArray(value)) return [];
+  const out: ClientHit[] = [];
+  for (const row of value) {
+    if (!row || typeof row !== "object") continue;
+    const record = row as { id?: unknown; name?: unknown; phone?: unknown };
+    if (typeof record.id !== "string" || typeof record.name !== "string") continue;
+    out.push({
+      id: record.id,
+      name: record.name,
+      phone: typeof record.phone === "string" ? record.phone : null,
+    });
+  }
+  return out;
+}
+
+function ClientChoices({
+  clients,
+  query,
+  onPick,
+}: {
+  clients: ClientHit[];
+  query: string;
+  onPick: (client: ClientHit) => void;
+}) {
+  const needle = query.trim().toLowerCase();
+  const digits = needle.replace(/\D/g, "");
+  const shown = clients
+    .filter((client) => {
+      if (!needle) return true;
+      if (client.name.toLowerCase().includes(needle)) return true;
+      return digits.length >= 3 && (client.phone ?? "").includes(digits);
+    })
+    .slice(0, 8);
+  if (clients.length === 0) {
+    return <p className="text-xs text-text-3">Todavía no tienes clientes guardados.</p>;
+  }
+  if (shown.length === 0) return null;
+  return (
+    <ul className="max-h-40 overflow-auto rounded-md border bg-card">
+      {shown.map((client) => (
+        <li key={client.id}>
+          <button
+            type="button"
+            className="flex w-full items-center justify-between gap-2 px-2 py-1.5 text-left text-sm hover:bg-accent"
+            onClick={() => onPick(client)}
+          >
+            <span className="truncate">{client.name}</span>
+            {client.phone && <span className="shrink-0 text-xs text-text-3">{client.phone}</span>}
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 function parseBookings(value: unknown): AgendaBooking[] {

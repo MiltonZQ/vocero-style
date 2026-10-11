@@ -90,6 +90,37 @@ export function tzOffsetMinutes(date: Date, tz: string): number {
  * primavera) devuelve un instante real usando el offset previo; en una hora
  * ambigua (retroceso) elige la primera ocurrencia. Nunca lanza.
  */
+/**
+ * Valor de `<input type="datetime-local">` leído como hora de pared del
+ * negocio. `new Date("2026-10-12T10:00")` usaría la zona del navegador.
+ */
+export function datetimeLocalToUtc(value: string, tz: string): string | null {
+  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/.exec(value);
+  if (!match || !match[1] || !match[2]) return null;
+  const instant = zonedWallClockToUtc(match[1], match[2], tz);
+  return instant ? instant.toISOString() : null;
+}
+
+/** Inverso de `datetimeLocalToUtc`, para rellenar el mismo input. */
+export function utcToDatetimeLocal(iso: string, tz: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const map: Record<string, string> = {};
+  for (const part of parts) map[part.type] = part.value;
+  const hour = map.hour === "24" ? "00" : map.hour;
+  if (!map.year || !map.month || !map.day || !hour || !map.minute) return "";
+  return `${map.year}-${map.month}-${map.day}T${hour}:${map.minute}`;
+}
+
 export function zonedWallClockToUtc(
   dayISODate: string,
   hhmm: string,

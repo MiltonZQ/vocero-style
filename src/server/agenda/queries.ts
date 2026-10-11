@@ -1,8 +1,10 @@
-import { and, desc, eq, gte, lt } from "drizzle-orm";
+import { and, desc, eq, gte, isNotNull, lt, max } from "drizzle-orm";
 import type { Actor } from "@/lib/auth/actor";
 import { getDb, schema } from "@/lib/db";
 import { scoped } from "@/lib/db/tenant";
 import { partsInTz } from "@/lib/time/slots";
+import { assertOwnStaff } from "@/server/agenda/catalog";
+import { AgendaHttpError } from "@/server/agenda/http";
 import { bookingScope } from "@/server/agenda/scope";
 import { getSettings } from "@/server/agenda/settings";
 
@@ -145,6 +147,61 @@ async function loadBookings(
     if (!staffViewer) item.conversationId = r.booking.conversationId;
     return item;
   });
+}
+
+export type StaffClient = {
+  id: string;
+  name: string;
+  phone: string | null;
+};
+
+/**
+ * Contactos que ya tienen una cita real con este profesional.
+ * Un barbero que pide el id de otro recibe 404, igual que en sus servicios.
+ */
+export async function listStaffClients(actor: Actor, staffId: string): Promise<StaffClient[]> {
+  assertOwnStaff(actor, staffId);
+  const db = getDb();
+  const staffRows = await db
+    .select({ id: schema.staff.id })
+    .from(schema.staff)
+    .where(
+      scoped(schema.staff.organizationId, actor.organizationId, eq(schema.staff.id, staffId))
+    )
+    .limit(1);
+  if (!staffRows[0]) throw new AgendaHttpError("not_found", "No encontrado");
+
+  const lastAt = max(schema.booking.scheduledAt);
+  const rows = await db
+    .select({
+      id: schema.contact.id,
+      name: schema.contact.name,
+      phone: schema.contact.phone,
+      lastAt,
+    })
+    .from(schema.booking)
+    .innerJoin(
+      schema.contact,
+      and(
+        eq(schema.booking.contactId, schema.contact.id),
+        eq(schema.contact.organizationId, actor.organizationId)
+      )
+    )
+    .where(
+      scoped(
+        schema.booking.organizationId,
+        actor.organizationId,
+        eq(schema.booking.staffId, staffId),
+        eq(schema.booking.kind, "session"),
+        eq(schema.booking.isTest, false),
+        isNotNull(schema.booking.contactId)
+      )
+    )
+    .groupBy(schema.contact.id, schema.contact.name, schema.contact.phone)
+    .orderBy(desc(lastAt))
+    .limit(100);
+
+  return rows.map((row) => ({ id: row.id, name: row.name, phone: row.phone }));
 }
 
 /** A staff member may reuse a contact only when it is already on one of their bookings. */
