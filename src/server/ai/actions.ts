@@ -85,6 +85,7 @@ const agendaActions = [
   z.object({ action: z.literal("greeting") }),
   z.object({ action: z.literal("my_bookings") }),
   z.object({ action: z.literal("list_services") }),
+  z.object({ action: z.literal("send_location") }),
 ] as const;
 
 export const AgentAction = z.discriminatedUnion("action", [
@@ -104,7 +105,7 @@ export type AgentActionType = z.infer<typeof AgentAction>;
 /** Las acciones propias de la agenda, base del tipo `BotAction` de las guardas. */
 export type AgendaModelAction = Extract<
   AgentActionType,
-  { action: "update_draft" | "book_slot" | "my_bookings" | "greeting" | "list_services" | "reply" | "handoff" }
+  { action: "update_draft" | "book_slot" | "my_bookings" | "greeting" | "list_services" | "send_location" | "reply" | "handoff" }
 >;
 
 /**
@@ -132,6 +133,7 @@ export function degradeAction(action: AgentActionType): AgentActionType {
     action.action === "book_slot" ||
     action.action === "my_bookings" ||
     action.action === "list_services" ||
+    action.action === "send_location" ||
     action.action === "greeting"
   ) {
     return { action: "none" };

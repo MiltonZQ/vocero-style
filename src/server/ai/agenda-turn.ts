@@ -5,6 +5,7 @@ import type { AgendaCatalog, AgendaCatalogService } from "@/server/agenda/agent"
 import { bookFromOffer } from "@/server/agenda/agent";
 import { AgendaHttpError } from "@/server/agenda/http";
 import { BookingError } from "@/server/agenda/booking-error";
+import { resolveWhen } from "@/server/agenda/when";
 import {
   buildCatalogMessage,
   buildConfirmation,
@@ -23,7 +24,7 @@ import {
   type DraftWhen,
 } from "@/server/agenda/draft";
 import { getShopLocation } from "@/server/agenda/location";
-import { isAnyStaff, matchByName } from "@/server/agenda/match";
+import { isAnyStaff, matchByName, normalizeText } from "@/server/agenda/match";
 import {
   buildMyBookingsMessage,
   existingBookingNotice,
@@ -157,6 +158,14 @@ function whenText(when: DraftWhen | null | undefined): string | null {
   return text || null;
 }
 
+/** El horario pedido con las mismas palabras que usan las ofertas ("hoy", "mañana de 14:00 a 19:00"). */
+function spokenWhen(when: DraftWhen, ctx: AgendaContext): string | null {
+  const resolved = resolveWhen(when, ctx.now, ctx.settings);
+  if (resolved.ok) return resolved.label;
+  // "Hoy" cuando ya no queda día sigue siendo "hoy": la oferta explicará que no hay lugar.
+  return normalizeText(when.day ?? "") === "hoy" ? "hoy" : null;
+}
+
 /** Lo ofrecido tal como lo lee el cliente: día en palabras y hora local. */
 function slotViews(
   offers: readonly { startUtc: string; staffName?: string | null }[],
@@ -217,8 +226,13 @@ export function renderDraftState(state: AgendaState, ctx: AgendaContext): string
 
 /* ------------------------- step messages -------------------------- */
 
+/** El paso `need_service` pregunta sin listar: la lista solo sale con `list_services`. */
+const ASK_SERVICE = "¿En cuál de nuestros servicios estás interesado?";
+
 type StepOptions = {
   prefix?: string;
+  /** Lo que el cliente pidió de horario en este turno, ya en palabras ("hoy"). */
+  ackWhen?: string;
   /** ¿Es el primer mensaje de horarios? Por defecto, si no hay oferta vigente. */
   firstOffer?: boolean;
 };
@@ -231,7 +245,7 @@ async function offerMessage(
   const { conversation, catalog, settings, now } = ctx;
   const service = catalog.services.find((s) => s.id === state.draft?.serviceId);
   const choice = state.draft?.staffChoice;
-  if (!service || !choice) return buildCatalogMessage(bookable(catalog));
+  if (!service || !choice) return ASK_SERVICE;
 
   // El aviso de cita vigente va solo en el primer mensaje de horarios.
   const notice =
@@ -270,7 +284,9 @@ export async function askCurrentStep(
   let body: string;
   switch (state.step) {
     case "need_service":
-      body = buildCatalogMessage(bookable(ctx.catalog));
+      body = opts.ackWhen
+        ? `¡Claro! Con gusto reviso la disponibilidad para ${opts.ackWhen}. ${ASK_SERVICE}`
+        : ASK_SERVICE;
       break;
     case "need_staff":
       body = service
@@ -279,7 +295,7 @@ export async function askCurrentStep(
             service.staff.map((p) => ({ name: p.displayName })),
             { intro: !opts.prefix }
           )
-        : buildCatalogMessage(bookable(ctx.catalog));
+        : ASK_SERVICE;
       break;
     case "need_slot":
       return offerMessage(state, ctx, opts);
@@ -412,8 +428,11 @@ async function handleUpdateDraft(
 
   // El `reply` del modelo no se antepone: el cliente lee solo texto del código.
   const prefix = notes.join(" ");
+  const ackWhen =
+    next.step === "need_service" && Object.keys(nextWhen).length > 0 ? spokenWhen(nextWhen, ctx) : null;
   return askCurrentStep(next, ctx, {
     ...(prefix ? { prefix } : {}),
+    ...(ackWhen ? { ackWhen } : {}),
     // Cambiar el borrador vacía la oferta, pero el aviso ya se dio la primera vez.
     firstOffer: state.offers.length === 0,
   });
@@ -551,6 +570,51 @@ async function handleMyBookings(ctx: AgendaContext): Promise<string> {
   });
 }
 
+const NO_COORDINATES_WARNING = (organizationId: string) =>
+  `[agenda] ubicación sin coordenadas: no se envía el pin (org=${organizationId})`;
+
+/**
+ * El cliente pidió la ubicación. Con coordenadas: texto corto + el pin de
+ * WhatsApp; sin ellas: la dirección (y el enlace) como texto. A mitad de una
+ * reserva se retoma la pregunta del paso, sin tocar el borrador.
+ */
+async function handleSendLocation(
+  state: AgendaState,
+  ctx: AgendaContext
+): Promise<{ text: string; pin?: LocationPin }> {
+  const orgId = ctx.conversation.organizationId;
+  const location = await getShopLocation(orgId);
+  const address = location.locationAddress?.trim() || null;
+  const mapsUrl = location.locationMapsUrl?.trim() || null;
+  const hasPin = location.latitude !== null && location.longitude !== null;
+  if (!hasPin) console.warn(NO_COORDINATES_WARNING(orgId));
+
+  let lead: string;
+  if (hasPin) {
+    lead = `¡Claro! Te comparto nuestra ubicación${address ? `: ${address.replace(/\.+$/, "")}` : ""}.`;
+  } else if (address || mapsUrl) {
+    lead = `¡Claro! Estamos en ${[address?.replace(/\.+$/, ""), mapsUrl].filter(Boolean).join(": ")}`;
+    if (!mapsUrl) lead += ".";
+  } else {
+    return { text: "¡Claro! En un momento te comparto la ubicación." };
+  }
+
+  const midBooking = state.step !== "need_service";
+  const followUp = midBooking
+    ? await askCurrentStep(state, ctx)
+    : "¿Te gustaría agendar alguno de nuestros servicios?";
+  const pin: LocationPin | undefined =
+    hasPin && location.latitude !== null && location.longitude !== null
+      ? {
+          latitude: location.latitude,
+          longitude: location.longitude,
+          name: ctx.businessName ?? "Ubicación del local",
+          ...(address ? { address } : {}),
+        }
+      : undefined;
+  return { text: `${lead} ${followUp}`, ...(pin ? { pin } : {}) };
+}
+
 async function textForDirective(
   directive: Directive,
   state: AgendaState,
@@ -608,6 +672,7 @@ export async function runAgendaAction(
   });
 
   let text: string | null = null;
+  let locationPin: LocationPin | undefined;
   try {
     if (guard.kind === "redirect") {
       text = await textForDirective(guard.directive, before, ctx);
@@ -637,6 +702,10 @@ export async function runAgendaAction(
       text = handleListServices(ctx);
     } else if (action.action === "my_bookings") {
       text = await handleMyBookings(ctx);
+    } else if (action.action === "send_location") {
+      const result = await handleSendLocation(before, ctx);
+      text = result.text;
+      locationPin = result.pin;
     }
   } catch (err) {
     console.error(`[agente] el motor de agenda falló: ${err}`);
@@ -663,6 +732,15 @@ export async function runAgendaAction(
   }
   if (text === null) return { kind: "delegate" };
   await deps.deliver(text);
+  if (locationPin) {
+    // El texto ya salió: un pin que falla se registra, no tumba el turno.
+    try {
+      await deps.deliverLocation(locationPin);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      console.warn(`[agente] no se pudo enviar el pin del local: ${reason}`);
+    }
+  }
   return { kind: "sent" };
 }
 

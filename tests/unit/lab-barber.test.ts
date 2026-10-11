@@ -180,7 +180,7 @@ describe("ai-mock drives the barber contract", () => {
       reason: "reprogramacion",
     });
     expect(mock("voy 10 minutos tarde a mi cita")).toEqual({ action: "handoff", reason: "llegada" });
-    expect(mock("¿dónde están ubicados?").action).toBe("reply");
+    expect(mock("¿dónde están ubicados?").action).toBe("send_location");
   });
 
   it("a plain greeting is a greeting, 'tarde' as a time of day is not a late arrival", () => {

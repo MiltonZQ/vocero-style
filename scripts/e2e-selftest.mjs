@@ -2449,16 +2449,23 @@ async function barberBotChecks() {
       );
     }
 
-    console.log("\n-- sin servicio dicho: catálogo con el precio en formato local --");
+    console.log("\n-- sin servicio dicho: pregunta sin lista; la lista solo con 'qué servicios' --");
     const fromK = `5214645${corrida}`;
     await decir(fromK, "Lead 019 catalogo", "quiero agendar");
     const convK = await convDe(fromK);
     if (convK) {
-      const cat = await respuesta(convK.id, 1);
+      const pregunta = await respuesta(convK.id, 1);
       ok(
-        "el catálogo pregunta '¿En cuál de nuestros servicios…' con el precio con separador de miles",
-        cat.includes("¿En cuál de nuestros servicios") &&
-          cat.includes(`${BARBER_SERVICE_NAME} ($25.000 COP)`) &&
+        "'quiero agendar' pregunta el servicio SIN listar el catálogo",
+        pregunta.includes("¿En cuál de nuestros servicios") && !pregunta.includes("($") && !pregunta.includes("Contamos con"),
+        pregunta
+      );
+      await decir(fromK, "Lead 019 catalogo", "¿qué servicios tienen?");
+      const cat = await respuesta(convK.id, 2);
+      ok(
+        "la lista de servicios trae el precio con separador de miles",
+        cat.includes(BARBER_SERVICE_NAME) &&
+          cat.includes("$25.000") &&
           !/2500000|25000(?![.\d])/.test(cat),
         cat
       );
@@ -2717,6 +2724,19 @@ async function barberBotChecks() {
         recibidas && (await salientes(convF.id)).length >= 3 &&
           c?.aiEnabled === true && !c?.handoffAt && !c?.handoffReason,
         JSON.stringify({ n: (await salientes(convF.id)).length, reason: c?.handoffReason })
+      );
+      const pinesFaq = await hasta(async () =>
+        ((await mockEstado()).outbox ?? []).filter(
+          (e) => e.type === "location" && String(e.to).endsWith(fromF.slice(3))
+        ).length >= 1
+      );
+      const outFaq = ((await mockEstado()).outbox ?? []).filter(
+        (e) => e.type === "location" && String(e.to).endsWith(fromF.slice(3))
+      );
+      ok(
+        "pedir la dirección/ubicación envía el pin de WhatsApp con la dirección del local",
+        pinesFaq && outFaq.every((e) => e.body?.location?.address === DIRECCION),
+        JSON.stringify(outFaq.map((e) => e.body?.location))
       );
     } else {
       ok("hay conversación de la pregunta frecuente", false);

@@ -102,6 +102,8 @@ type MockTurn =
   | { action: "book_slot"; time: string; day?: string }
   | { action: "greeting" }
   | { action: "my_bookings" }
+  | { action: "list_services" }
+  | { action: "send_location" }
   | { action: "handoff"; reason: string }
   | { action: "reply"; text: string }
   | {
@@ -183,11 +185,10 @@ function barberTurn(
     }
   }
 
+  if (/que servicios|\bprecios\b/.test(folded)) return { action: "list_services" };
+
   if (/donde|direccion|ubicad|ubicacion|como llego/.test(folded)) {
-    return {
-      action: "reply",
-      text: "Con gusto: te comparto la dirección del local; si necesitas algo más, el equipo te lo confirma.",
-    };
+    return { action: "send_location" };
   }
 
   const systemAll = messages

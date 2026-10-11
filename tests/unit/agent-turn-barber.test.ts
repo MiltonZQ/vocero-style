@@ -491,9 +491,35 @@ describeDb("barber agent turn - receptionist tone (real DB)", () => {
 
   it("an empty update_draft (wants to book, no service yet) asks which service, without welcoming", async () => {
     const text = await turn("quiero una cita", { action: "update_draft" });
+    expect(text).toBe("¿En cuál de nuestros servicios estás interesado?");
+  });
+
+  it("update_draft with only a day acknowledges it and asks the service without listing them", async () => {
+    const text = await turn("tienen disponibilidad para hoy", {
+      action: "update_draft",
+      when: { day: "hoy" },
+    });
     expect(text).toBe(
-      "¿En cuál de nuestros servicios estás interesado? Contamos con Fade ($250 MXN), Corte clásico ($200 MXN), Barba ($150 MXN) y Cejas ($80 MXN)."
+      "¡Claro! Con gusto reviso la disponibilidad para hoy. ¿En cuál de nuestros servicios estás interesado?"
     );
+    expect((await draft())?.when).toMatchObject({ day: "hoy" });
+  });
+
+  it("acknowledges a day plus a time window", async () => {
+    const text = await turn("mañana en la tarde", {
+      action: "update_draft",
+      when: { day: "mañana", from: "14:00", to: "19:00" },
+    });
+    expect(text).toBe(
+      "¡Claro! Con gusto reviso la disponibilidad para mañana de 14:00 a 19:00. ¿En cuál de nuestros servicios estás interesado?"
+    );
+  });
+
+  it("the plain service re-ask never lists the services", async () => {
+    const text = await turn("quiero una cita", { action: "update_draft" });
+    expect(text).toBe("¿En cuál de nuestros servicios estás interesado?");
+    const failed = await turn("hola", "FAIL");
+    expect(failed).toBe("¿En cuál de nuestros servicios estás interesado?");
   });
 
   it("a greeting in the middle of the flow re-asks the current step instead of welcoming again", async () => {

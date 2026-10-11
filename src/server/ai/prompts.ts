@@ -141,6 +141,7 @@ export function buildAgentSystemPrompt(input: {
         '- {"action":"book_slot","time":"HH:mm","day":"...","option":1} — el cliente eligió uno de los horarios que el sistema le ofreció. Pon la HORA que dijo en time (24 h), y day solo si mencionó el día. Si solo eligió por posición ("el primero", "la segunda"), pon option (1, 2 o 3).',
         '- {"action":"my_bookings"} — el cliente pregunta por su cita ("¿a qué hora era mi cita?").',
         '- {"action":"list_services"} — el cliente pregunta qué servicios hay, qué hacen o cuánto cuestan ("¿qué servicios tienen?", "precios"). El sistema le manda la lista completa.',
+        '- {"action":"send_location"} — el cliente pregunta dónde queda el local, pide que le envíen la ubicación, la dirección o cómo llegar ("¿dónde están?", "mándame la ubicación"). El sistema le manda el pin de WhatsApp y la dirección; NUNCA pegues enlaces ni direcciones tú.',
       ]
     : [];
   const agendaRules = input.agenda
@@ -156,7 +157,7 @@ export function buildAgentSystemPrompt(input: {
         '- Si quiere CANCELAR → handoff con reason "cancelacion". Si quiere CAMBIAR/REPROGRAMAR → handoff con reason "reprogramacion". Esas decisiones no son tuyas.',
         '- Si avisa que llegará tarde o viene sin cita → handoff con reason "llegada".',
         '- Si pide hablar con una persona, se queja o manda una foto/archivo que no puedes atender → handoff con reason "cliente".',
-        "- Si el cliente pregunta qué servicios o precios hay → list_services. Un saludo sin pedido concreto → greeting. Preguntas generales (dirección, pagos, horario, estacionamiento): reply, SOLO con datos del conocimiento.",
+        "- Si el cliente pregunta qué servicios o precios hay → list_services. Un saludo sin pedido concreto → greeting. Si pide la ubicación, la dirección o cómo llegar → send_location. Preguntas generales (pagos, horario, estacionamiento): reply, SOLO con datos del conocimiento.",
         "- Cuando escribas un reply: trato de tú, profesional y cálido, español neutro, sin jerga ni muletillas (nada de \"te late\", \"te da igual\", \"bro\", \"wey\"), breve y con a lo más un emoji ligero cuando salga natural.",
         "- service y staff son NOMBRES del catálogo, nunca ids. Si pide un servicio que no está en el catálogo, usa update_draft con su texto literal en service (NO digas que lo confirmarás): el sistema le responde con lo más parecido.",
       ]

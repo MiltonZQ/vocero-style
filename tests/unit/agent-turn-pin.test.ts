@@ -215,3 +215,97 @@ describeDb("location pin after a booking (real DB)", () => {
     expect(rows[2]).toMatchObject({ origin: "ai", text: null });
   });
 });
+
+describeDb("send_location on request (real DB)", () => {
+  const PIN = {
+    latitude: 4.598865027392155,
+    longitude: -74.1632885539481,
+    name: "Style",
+    address: "Av. Juárez 123, Col. Centro",
+  };
+
+  it("sends a short text and then the pin, through the same sender as the booking pin", async () => {
+    await say("cv_real", "me podrías enviar la ubicación", { action: "send_location" });
+    expect(h.sendText).toHaveBeenCalledTimes(1);
+    expect(String(h.sendText.mock.calls[0]?.[0]?.text)).toBe(
+      "¡Claro! Te comparto nuestra ubicación: Av. Juárez 123, Col. Centro. ¿Te gustaría agendar alguno de nuestros servicios?"
+    );
+    expect(h.sendStructured).toHaveBeenCalledTimes(1);
+    expect(h.sendStructured).toHaveBeenCalledWith({
+      conversationId: "cv_real",
+      organizationId: "org1",
+      kind: "location",
+      aiGenerated: true,
+      location: PIN,
+    });
+    expect(h.sendText.mock.invocationCallOrder[0]!).toBeLessThan(
+      h.sendStructured.mock.invocationCallOrder[0]!
+    );
+  });
+
+  it("does not count as stuck and does not touch the draft", async () => {
+    for (let i = 0; i < 4; i++) {
+      await say("cv_real", "ubicación?", { action: "send_location" });
+    }
+    const [conv] = await eph.run(`SELECT handoff_at FROM conversation WHERE id = 'cv_real'`);
+    expect(conv?.handoff_at).toBeNull();
+    const [d] = await eph.run(
+      `SELECT service_id, staff_choice, stuck_turns FROM booking_draft WHERE conversation_id = 'cv_real'`
+    );
+    expect(d?.service_id ?? null).toBeNull();
+    expect(Number(d?.stuck_turns ?? 0)).toBe(0);
+  });
+
+  it("mid-booking: text, pin and then the current step question", async () => {
+    await say("cv_real", "quiero un fade", { action: "update_draft", service: "Fade" });
+    h.sendText.mockClear();
+    h.sendStructured.mockClear();
+    await say("cv_real", "dónde quedan?", { action: "send_location" });
+    expect(h.sendStructured).toHaveBeenCalledTimes(1);
+    const text = String(h.sendText.mock.calls[0]?.[0]?.text);
+    expect(text).toContain("Te comparto nuestra ubicación: Av. Juárez 123, Col. Centro.");
+    expect(text).toContain("tenemos disponible a las"); // Fade has a single barber: next step is the offers
+    expect(text).not.toContain("¿Te gustaría agendar");
+    const [d] = await eph.run(`SELECT service_id FROM booking_draft WHERE conversation_id = 'cv_real'`);
+    expect(d?.service_id).toBe("sv_fade");
+  });
+
+  it("without coordinates: address and Maps link as text, a warning, no pin", async () => {
+    await eph.run(`UPDATE calendar_settings SET latitude = NULL, longitude = NULL`);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await say("cv_real", "dirección?", { action: "send_location" });
+    expect(h.sendStructured).not.toHaveBeenCalled();
+    const text = String(h.sendText.mock.calls[0]?.[0]?.text);
+    expect(text).toContain("Av. Juárez 123, Col. Centro");
+    expect(text).toContain("https://maps.example/style");
+    expect(warn.mock.calls.map((c) => String(c[0])).join("\n")).toContain("sin coordenadas");
+    warn.mockRestore();
+  });
+
+  it("without address either: promises to share it, warns and does not hand off", async () => {
+    await eph.run(
+      `UPDATE calendar_settings SET latitude = NULL, longitude = NULL, location_address = NULL, location_maps_url = NULL`
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await say("cv_real", "dirección?", { action: "send_location" });
+    expect(h.sendStructured).not.toHaveBeenCalled();
+    expect(String(h.sendText.mock.calls[0]?.[0]?.text)).toMatch(/en un momento|compart/i);
+    expect(warn).toHaveBeenCalled();
+    const [conv] = await eph.run(`SELECT handoff_at FROM conversation WHERE id = 'cv_real'`);
+    expect(conv?.handoff_at).toBeNull();
+    warn.mockRestore();
+    await eph.run(
+      `UPDATE calendar_settings SET location_address = 'Av. Juárez 123, Col. Centro', location_maps_url = 'https://maps.example/style'`
+    );
+  });
+
+  it("a Laboratorio conversation stores the pin and never calls the sender", async () => {
+    await say("cv_test", "ubicación?", { action: "send_location" });
+    expect(h.sendText).not.toHaveBeenCalled();
+    expect(h.sendStructured).not.toHaveBeenCalled();
+    const rows = await eph.run(
+      `SELECT type FROM message WHERE conversation_id = 'cv_test' AND direction = 'out' ORDER BY created_at, id`
+    );
+    expect(rows.map((r) => r.type)).toEqual(["text", "location"]);
+  });
+});

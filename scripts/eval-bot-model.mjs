@@ -99,6 +99,7 @@ export const SYSTEM = [
     "- {\"action\":\"book_slot\",\"time\":\"HH:mm\",\"day\":\"...\",\"option\":1} — el cliente eligió uno de los horarios que el sistema le ofreció. Pon la HORA que dijo en time (24 h), y day solo si mencionó el día. Si solo eligió por posición (\"el primero\", \"la segunda\"), pon option (1, 2 o 3).",
     "- {\"action\":\"my_bookings\"} — el cliente pregunta por su cita (\"¿a qué hora era mi cita?\").",
     "- {\"action\":\"list_services\"} — el cliente pregunta qué servicios hay, qué hacen o cuánto cuestan (\"¿qué servicios tienen?\", \"precios\"). El sistema le manda la lista completa.",
+    "- {\"action\":\"send_location\"} — el cliente pregunta dónde queda el local, pide que le envíen la ubicación, la dirección o cómo llegar (\"¿dónde están?\", \"mándame la ubicación\"). El sistema le manda el pin de WhatsApp y la dirección; NUNCA pegues enlaces ni direcciones tú.",
     "Reglas duras:",
     "- Si el cliente pide hablar con una persona o un humano → handoff.",
     "- Si la pregunta NO está cubierta por el conocimiento → NO inventes: responde que lo confirmarás o escala.",
@@ -114,7 +115,7 @@ export const SYSTEM = [
     "- Si quiere CANCELAR → handoff con reason \"cancelacion\". Si quiere CAMBIAR/REPROGRAMAR → handoff con reason \"reprogramacion\". Esas decisiones no son tuyas.",
     "- Si avisa que llegará tarde o viene sin cita → handoff con reason \"llegada\".",
     "- Si pide hablar con una persona, se queja o manda una foto/archivo que no puedes atender → handoff con reason \"cliente\".",
-    "- Si el cliente pregunta qué servicios o precios hay → list_services. Un saludo sin pedido concreto → greeting. Preguntas generales (dirección, pagos, horario, estacionamiento): reply, SOLO con datos del conocimiento.",
+    "- Si el cliente pregunta qué servicios o precios hay → list_services. Un saludo sin pedido concreto → greeting. Si pide la ubicación, la dirección o cómo llegar → send_location. Preguntas generales (pagos, horario, estacionamiento): reply, SOLO con datos del conocimiento.",
     "- Cuando escribas un reply: trato de tú, profesional y cálido, español neutro, sin jerga ni muletillas (nada de \"te late\", \"te da igual\", \"bro\", \"wey\"), breve y con a lo más un emoji ligero cuando salga natural.",
     "- service y staff son NOMBRES del catálogo, nunca ids. Si pide un servicio que no está en el catálogo, usa update_draft con su texto literal en service (NO digas que lo confirmarás): el sistema le responde con lo más parecido.",
     "- JSON puro, sin markdown ni texto adicional.",
@@ -227,7 +228,7 @@ export const CASES = [
   {
     id: "09-direccion-faq",
     msgs: [user("donde estan ubicados?"), stateBlock()],
-    check: (o) => o.action === "reply" && norm(o.text).includes("juarez"),
+    check: (o) => o.action === "send_location",
   },
   {
     id: "10-humano",
@@ -288,6 +289,37 @@ export const CASES = [
     id: "17-que-servicios-tienen",
     msgs: [user("¿qué servicios tienen?"), stateBlock()],
     check: (o) => o.action === "list_services",
+  },
+  {
+    id: "18-envia-ubicacion",
+    msgs: [user("me podrías enviar la ubicación"), stateBlock()],
+    check: (o) => o.action === "send_location",
+  },
+  {
+    id: "19-donde-quedan",
+    msgs: [user("¿dónde quedan?"), stateBlock()],
+    check: (o) => o.action === "send_location",
+  },
+  {
+    id: "20-disponibilidad-hoy",
+    msgs: [user("tienen disponibilidad para hoy"), stateBlock()],
+    check: (o) => o.action === "update_draft" && norm(o.when?.day) === "hoy",
+  },
+  {
+    id: "21-algo-ahorita",
+    msgs: [user("¿algo ahorita?"), stateBlock()],
+    check: (o) => o.action === "update_draft" && norm(o.when?.day) === "hoy",
+  },
+  {
+    id: "22-hoy-en-la-tarde",
+    msgs: [user("el día de hoy en la tarde"), stateBlock()],
+    check: (o) =>
+      o.action === "update_draft" && norm(o.when?.day) === "hoy" && inRange(o.when?.from, "12:00", "15:00"),
+  },
+  {
+    id: "23-esta-tarde",
+    msgs: [user("esta tarde"), stateBlock()],
+    check: (o) => o.action === "update_draft" && norm(o.when?.day) === "hoy",
   },
 ];
 
