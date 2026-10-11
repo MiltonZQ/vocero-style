@@ -43,6 +43,11 @@ export type CalendarSettings = {
   connector: ConnectorId;
   /** Sala fija del conector `enlace-fijo`; null ⇒ citas sin link. */
   meetingLink: string | null;
+  /** 019 — dónde queda el local (cita presencial). */
+  locationAddress: string | null;
+  locationMapsUrl: string | null;
+  /** 019 — minutos de anticipación que se le recomiendan al cliente. */
+  arrivalLeadMinutes: number;
 };
 
 /** Lo que ve una instancia recién encendida: útil sin configurar nada. */
@@ -55,13 +60,19 @@ export const DEFAULT_CALENDAR_SETTINGS: CalendarSettings = {
   timezone: DEFAULT_TIMEZONE,
   connector: DEFAULT_CONNECTOR,
   meetingLink: null,
+  locationAddress: null,
+  locationMapsUrl: null,
+  arrivalLeadMinutes: 5,
 };
+
+export const ADDRESS_MAX_LENGTH = 300;
 
 export const LIMITS = {
   slotMinutes: { min: 10, max: 240 },
   bufferMinutes: { min: 0, max: 120 },
   minNoticeHours: { min: 0, max: 72 },
   maxDaysAhead: { min: 1, max: 60 },
+  arrivalLeadMinutes: { min: 0, max: 120 },
 } as const;
 
 export async function getSettings(
@@ -89,6 +100,9 @@ export async function getSettings(
     // puede dejar la agenda inservible: se degrada al soberano.
     connector: isConnectorId(row.connector) ? row.connector : DEFAULT_CONNECTOR,
     meetingLink: row.meetingLink,
+    locationAddress: row.locationAddress,
+    locationMapsUrl: row.locationMapsUrl,
+    arrivalLeadMinutes: row.arrivalLeadMinutes,
   };
 }
 
@@ -158,6 +172,17 @@ export async function upsertSettings(
     meetingLink: normalizeLink(
       input.meetingLink !== undefined ? input.meetingLink : current.meetingLink
     ),
+    locationAddress: normalizeAddress(
+      input.locationAddress !== undefined ? input.locationAddress : current.locationAddress
+    ),
+    locationMapsUrl: normalizeMapsUrl(
+      input.locationMapsUrl !== undefined ? input.locationMapsUrl : current.locationMapsUrl
+    ),
+    arrivalLeadMinutes: clampInt(
+      input.arrivalLeadMinutes ?? current.arrivalLeadMinutes,
+      LIMITS.arrivalLeadMinutes.min,
+      LIMITS.arrivalLeadMinutes.max
+    ),
   };
 
   const db = getDb();
@@ -170,6 +195,9 @@ export async function upsertSettings(
     timezone: next.timezone,
     connector: next.connector,
     meetingLink: next.meetingLink,
+    locationAddress: next.locationAddress,
+    locationMapsUrl: next.locationMapsUrl,
+    arrivalLeadMinutes: next.arrivalLeadMinutes,
   };
   await db
     .insert(schema.calendarSettings)
@@ -210,6 +238,34 @@ export function normalizeWeeklyHours(input: unknown): WeeklyHours {
 function normalizeLink(link: string | null | undefined): string | null {
   const trimmed = (link ?? "").trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+/** 019 — Vacío ⇒ null. Más de 300 caracteres se rechaza: no se corta una dirección. */
+export function normalizeAddress(address: string | null | undefined): string | null {
+  const trimmed = (address ?? "").trim();
+  if (trimmed.length === 0) return null;
+  if (trimmed.length > ADDRESS_MAX_LENGTH) {
+    throw new CalendarSettingsError(
+      `La dirección no puede pasar de ${ADDRESS_MAX_LENGTH} caracteres`
+    );
+  }
+  return trimmed;
+}
+
+/** 019 — Vacío ⇒ null. Solo https: es un enlace que el cliente va a abrir. */
+export function normalizeMapsUrl(url: string | null | undefined): string | null {
+  const trimmed = (url ?? "").trim();
+  if (trimmed.length === 0) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new CalendarSettingsError("El enlace de Google Maps no es una URL válida");
+  }
+  if (parsed.protocol !== "https:") {
+    throw new CalendarSettingsError("El enlace de Google Maps debe empezar con https://");
+  }
+  return trimmed;
 }
 
 function clampInt(value: number, min: number, max: number): number {

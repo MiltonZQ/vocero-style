@@ -3,7 +3,9 @@ import { apiError, parseBody, withAuth } from "@/lib/api";
 import { CONNECTOR_ORDER } from "@/lib/agenda-connectors";
 import { agendaDisabledResponse, agendaEnabled } from "@/server/agenda/flag";
 import {
+  ADDRESS_MAX_LENGTH,
   CalendarSettingsError,
+  LIMITS,
   getSettings,
   upsertSettings,
 } from "@/server/agenda/settings";
@@ -46,7 +48,31 @@ const putSchema = z.object({
     })
     .optional(),
   meetingLink: z.string().nullish(),
+  // 019 — local físico. Aquí SÍ se rechaza (no se recorta): una dirección
+  // cortada o un enlace roto se le mandaría tal cual al cliente.
+  locationAddress: z.string().max(ADDRESS_MAX_LENGTH).nullish(),
+  locationMapsUrl: z
+    .string()
+    .trim()
+    .refine((v) => v === "" || isHttpsUrl(v), {
+      message: "El enlace de Google Maps debe ser una URL https",
+    })
+    .nullish(),
+  arrivalLeadMinutes: z
+    .number()
+    .int()
+    .min(LIMITS.arrivalLeadMinutes.min)
+    .max(LIMITS.arrivalLeadMinutes.max)
+    .optional(),
 });
+
+function isHttpsUrl(value: string): boolean {
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Guarda lo que se pueda salvar: los enteros fuera de rango se recortan y los

@@ -37,6 +37,9 @@ type Settings = {
   timezone: string;
   connector: ConnectorId;
   meetingLink: string | null;
+  locationAddress: string | null;
+  locationMapsUrl: string | null;
+  arrivalLeadMinutes: number;
 };
 
 const DAYS: { key: DayKey; label: string }[] = [
@@ -144,6 +147,13 @@ export function AgendaClient() {
         meetingLink: settings.meetingLink?.trim()
           ? settings.meetingLink.trim()
           : null,
+        locationAddress: settings.locationAddress?.trim()
+          ? settings.locationAddress.trim()
+          : null,
+        locationMapsUrl: settings.locationMapsUrl?.trim()
+          ? settings.locationMapsUrl.trim()
+          : null,
+        arrivalLeadMinutes: settings.arrivalLeadMinutes,
       }),
     }).catch(() => null);
     setSaving(false);
@@ -294,6 +304,63 @@ export function AgendaClient() {
               onChange={(e) => patch({ timezone: e.target.value })}
               placeholder="America/Mexico_City"
             />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Ubicación del local</CardTitle>
+          <CardDescription>
+            Para citas en persona. El agente comparte estos datos al confirmar
+            la cita y cuando un cliente pregunta dónde están.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="address">Dirección del local</Label>
+            <Input
+              id="address"
+              maxLength={300}
+              value={settings.locationAddress ?? ""}
+              onChange={(e) => patch({ locationAddress: e.target.value })}
+              placeholder="Calle, número, colonia, ciudad"
+            />
+            <p className="text-xs text-text-3">
+              Tal como quieres que la lea el cliente (máximo 300 caracteres).
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="maps">Enlace de Google Maps</Label>
+            <Input
+              id="maps"
+              type="url"
+              value={settings.locationMapsUrl ?? ""}
+              onChange={(e) => patch({ locationMapsUrl: e.target.value })}
+              placeholder="https://maps.app.goo.gl/…  (opcional)"
+            />
+            <p className="text-xs text-text-3">
+              Debe empezar con https://. En Google Maps: Compartir → Copiar
+              enlace.
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="arrival">Minutos de anticipación recomendados</Label>
+            <Input
+              id="arrival"
+              type="number"
+              min={0}
+              max={120}
+              className="w-28"
+              value={settings.arrivalLeadMinutes}
+              onChange={(e) =>
+                patch({ arrivalLeadMinutes: Number(e.target.value) })
+              }
+            />
+            <p className="text-xs text-text-3">
+              Se le pide al cliente llegar con este tiempo de antelación (0 a
+              120).
+            </p>
           </div>
         </CardContent>
       </Card>
