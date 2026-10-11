@@ -103,11 +103,15 @@ Agente de referencia: [nea-agent](https://github.com/kevinrivm/nea-agent), MIT.
 
 Enciéndela con `AGENDA=on` y el CRM sabe cuándo estás libre: defines tu horario
 en Ajustes → Agenda y tu agente ofrece huecos concretos, reserva el que el
-cliente elige y lo deja registrado junto a su conversación. Dos garantías que
-no se negocian: **solo se reserva un horario que se ofreció** (nada de que el
-modelo invente un martes a las 10) y **nunca se confirma una cita que no se
-creó** — si el hueco se ocupó a media conversación, la respuesta trae
-alternativas frescas en vez de una promesa falsa.
+cliente elige y lo deja registrado junto a su conversación. Con el equipo
+dado de alta hay catálogo de servicios, calendario de todos para recepción y
+dueño, y cada profesional entra solo a lo suyo. Sigue siendo opcional y
+apagada por defecto. Dos garantías que no se negocian: **solo se reserva un
+horario que se ofreció** (nada de que el modelo invente un martes a las 10) y
+**nunca se confirma una cita que no se creó** — si el hueco se ocupó a media
+conversación, la respuesta trae alternativas frescas en vez de una promesa
+falsa. La guía del equipo está en
+[`docs/agenda-multi-profesional.md`](docs/agenda-multi-profesional.md).
 
 Cómo se entrega la reunión lo eliges tú, con un **conector**:
 
@@ -454,10 +458,11 @@ La versión vive en `package.json` y se sube en el PR que publica el cambio.
 
 ### Antes fuera de alcance, ahora detrás de una bandera
 
-**El motor de agendamiento ya está en el core**, apagado por defecto. Aquí
-decía que quedaba fuera a propósito, con dos razones. Las dos eran buenas y
-las dos cambiaron; se dejan escritas porque el porqué importa más que la
-conclusión:
+**El motor de agendamiento ya está en el core**, apagado por defecto. Encendido,
+cubre también el equipo, el catálogo, el calendario global y los roles de
+acceso (dueño, recepción, profesional). Aquí decía que quedaba fuera a
+propósito, con dos razones. Las dos eran buenas y las dos cambiaron; se dejan
+escritas porque el porqué importa más que la conclusión:
 
 - *"Son mil líneas y una dependencia de fechas en un proyecto cuyo argumento es
   ser ligero."* — Cierto, y por eso vive detrás de `AGENDA`: una instancia que

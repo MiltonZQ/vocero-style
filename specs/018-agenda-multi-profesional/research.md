@@ -402,6 +402,9 @@ ofertas son efímeras (se reemplazan completas en cada ronda).
 zona `America/Mexico_City` de los defaults de la 015). **SUPUESTO** a validar
 con el dueño: Style opera en MXN. No hay cobro (spec: sin pagos).
 
+**Lo que implementa el código (cierre 018, no es una decisión nueva)**: la
+moneda por defecto del servicio y de la cita es `MXN` (D8).
+
 ---
 
 ## D9. Eventos en tiempo real (SSE) para el profesional
@@ -455,6 +458,10 @@ por ese eje (FR-032, extendido al servicio para preservar el comportamiento
 actual). **SUPUESTO de producto** (Constitución VII): si el cliente no nombra
 profesional y hay varios, el agente usa `any` en vez de preguntar; solo
 pregunta si el cliente da señales de preferencia. Revisable en el prompt.
+
+**Lo que implementa el código (cierre 018, no es una decisión nueva)**:
+`resolveStaff` (`src/server/agenda/agent.ts`) trata el profesional omitido,
+vacío o `"any"` como cualquiera (D10).
 
 **Alternativas**: guardar N filas por instante (una por candidato) y resolver
 al reservar — más flexible pero rompe la unicidad de `startUtc` por oferta que
@@ -534,6 +541,10 @@ transaccional en el núcleo). Restricciones: un perfil ↔ una cuenta
 "sin acceso a nada". Desactivar al profesional no borra la cuenta: la bloquea
 vía `requireActor`.
 
+**Lo que implementa el código (cierre 018, no es una decisión nueva)**:
+`POST /api/staff/[id]/account` exige contraseña (mínimo 8 caracteres), no
+envía correo, y responde `{ ok: true }` sin devolver la contraseña (D14).
+
 ---
 
 ## Resumen de supuestos no verificados (SUPUESTO)
@@ -546,6 +557,11 @@ vía `requireActor`.
 3. Moneda por defecto `MXN` (D8).
 4. "Invitar con un correo" = alta con contraseña temporal; no hay email (D14).
 5. Si el cliente no nombra profesional y hay varios, el agente usa `any` (D10).
+
+**Cierre 018**: los puntos 3, 4 y 5 quedan cerrados como lo que el código
+implementa (D8 moneda `MXN`, D14 contraseña temporal, D10 profesional omitido
+= cualquiera). No son decisiones nuevas.
+
 6. Recurso ajeno por id responde 404 en vez de 403 (D6) — decisión de este
    plan sobre un detalle que el spec deja abierto.
 7. `scripts/e2e-selftest.mjs` usa una sola cookie global (`let cookie`); el

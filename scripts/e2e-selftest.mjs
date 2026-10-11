@@ -2616,6 +2616,27 @@ async function atribucionChecks() {
 
 let pendientes = 0;
 
+/** Qué bloques (1)–(9) de este gate llegaron a ejecutarse. */
+const aislamientoRan = new Set();
+
+function marcoAislamiento(n) {
+  aislamientoRan.add(n);
+}
+
+/**
+ * Falla si un bloque exigido no corrió. No basta con que los `ok()` de
+ * antes hayan pasado: un return a media función también deja el hueco.
+ * Con la agenda apagada no se exigen (2), (3) ni (6)–(8).
+ */
+function cierreAislamiento(encendida) {
+  const requeridos = encendida ? [1, 2, 3, 4, 5, 6, 7, 8, 9] : [1, 4, 5, 9];
+  const faltan = requeridos.filter((n) => !aislamientoRan.has(n));
+  const nombre = faltan.length
+    ? `aislamiento ran-set: faltan ${faltan.map((n) => `(${n})`).join("")}`
+    : "aislamiento ran-set";
+  ok(nombre, faltan.length === 0);
+}
+
 /** Check de una historia aún sin implementar: visible, pero no tumba el gate. */
 function pendiente(name, cond, historia, extra = "") {
   if (cond) {
@@ -2731,6 +2752,7 @@ async function us1EquipoCatalogo({ ownerJar, jarA }) {
     }
 
     if (serviceId) {
+      marcoAislamiento(3);
       for (const [who, jar] of [
         ["staff", jarA],
         ["reception", jarR],
@@ -2746,6 +2768,16 @@ async function us1EquipoCatalogo({ ownerJar, jarA }) {
           `${price.res.status} ${JSON.stringify(price.json)}`
         );
       }
+      const pricePut = await api(`/api/staff/${ISO.A.staff}/services/${serviceId}`, {
+        method: "PUT",
+        jar: jarA,
+        body: JSON.stringify({ priceCents: 1 }),
+      });
+      ok(
+        "staff PUT /api/staff/{id}/services/{serviceId} con priceCents → 403",
+        pricePut.res.status === 403 && pricePut.json?.error?.code === "forbidden",
+        `${pricePut.res.status} ${JSON.stringify(pricePut.json)}`
+      );
       const reread = await api("/api/services?includeInactive=1", { jar: ownerJar });
       const row = (reread.json?.services ?? []).find((s) => s.id === serviceId);
       ok(
@@ -3098,6 +3130,7 @@ async function slice5ReservasYTablero({ ownerJar, jarA, sql, orgId, svc, created
       body: JSON.stringify(sessionBody(staffId, serviceId, startUtc, phone())),
     });
 
+  marcoAislamiento(2);
   const [before] = await sql`select status, scheduled_at from booking where id = ${ISO.B.booking}`;
   for (const [name, body] of [
     ["cancel", { action: "cancel" }],
@@ -3194,6 +3227,7 @@ async function slice5ReservasYTablero({ ownerJar, jarA, sql, orgId, svc, created
   );
 
   console.log("  -- T050 no solapamiento");
+  marcoAislamiento(6);
   let pairsOk = 0;
   for (let i = 0; i < 100; i++) {
     const start = starts[10 + i];
@@ -3228,6 +3262,7 @@ async function slice5ReservasYTablero({ ownerJar, jarA, sql, orgId, svc, created
     `${dosA.res.status}/${dosB.res.status}`
   );
 
+  marcoAislamiento(7);
   const overlapStart = starts[5];
   const ovIds = ["bk_e2es5ov1", "bk_e2es5ov2"];
   await sql`delete from booking where id = any(${ovIds})`;
@@ -3250,6 +3285,7 @@ async function slice5ReservasYTablero({ ownerJar, jarA, sql, orgId, svc, created
     rejected.map((r) => pgCode(r.reason)).join(",") || "sin rechazo"
   );
 
+  marcoAislamiento(8);
   const blockStart = starts[6];
   const [blockRes, sessRes] = await Promise.all([
     apiAsync("/api/bookings", {
@@ -3416,6 +3452,7 @@ async function slice5ReservasYTablero({ ownerJar, jarA, sql, orgId, svc, created
 }
 
 async function aislamientoChecks() {
+  aislamientoRan.clear();
   const encendida = /^(on|1|true|si|sí|yes)$/i.test(
     (process.env.AGENDA ?? "").trim()
   );
@@ -3536,6 +3573,7 @@ async function aislamientoChecks() {
 
     // ---- (4) superficies vedadas para staff ----
     console.log("  -- (4) superficies vedadas para staff → 403 exacto");
+    marcoAislamiento(4);
     for (const ruta of [
       "/api/conversations",
       "/api/contacts",
@@ -3617,6 +3655,7 @@ async function aislamientoChecks() {
 
     // ---- (5) cuenta sin perfil / desactivada ----
     console.log("  -- (5) cuenta staff sin perfil y con perfil desactivado");
+    marcoAislamiento(5);
     {
       const r = await apiAsync("/api/settings/whatsapp", { jar: jarC });
       ok("staff sin perfil: ruta de ajustes → 403", r.res.status === 403, `status ${r.res.status}`);
@@ -3625,7 +3664,20 @@ async function aislamientoChecks() {
         jar: jarC,
         body: JSON.stringify({}),
       });
-      ok("staff sin perfil: escritura POST /api/bookings → 403", w.res.status === 403, `status ${w.res.status}`);
+      if (encendida) {
+        ok(
+          "staff sin perfil: escritura POST /api/bookings → 403",
+          w.res.status === 403,
+          `status ${w.res.status}`
+        );
+      } else {
+        // La bandera se mira dentro de withAuth, antes del 403 de "sin perfil".
+        ok(
+          "staff sin perfil: escritura POST /api/bookings con la agenda apagada → 404",
+          w.res.status === 404,
+          `status ${w.res.status}`
+        );
+      }
       const l = await apiAsync("/api/bookings", { jar: jarC });
       if (encendida) {
         ok(
@@ -3650,6 +3702,7 @@ async function aislamientoChecks() {
 
     // ---- (1) lectura cruzada (US3) ----
     console.log("  -- (1) lectura cruzada entre profesionales (US3)");
+    marcoAislamiento(1);
     {
       const r = await apiAsync(`/api/bookings/${ISO.B.booking}`, { jar: jarA });
       ok(
@@ -3690,8 +3743,21 @@ async function aislamientoChecks() {
         ok(`bandera apagada: GET ${ruta} → 404`, r.res.status === 404, `status ${r.res.status}`);
       }
       ok("bandera apagada: /api/me informa agendaEnabled:false", meOwner.json?.agendaEnabled === false);
+      for (const ruta of ["/calendar", "/my-agenda"]) {
+        const page = await fetch(`${BASE}${ruta}`, {
+          redirect: "manual",
+          headers: { cookie: ownerJar.cookie },
+        });
+        ok(
+          `bandera apagada: GET ${ruta} como dueño → 404`,
+          page.status === 404,
+          `status ${page.status} location=${page.headers.get("location") ?? ""}`
+        );
+      }
+      marcoAislamiento(9);
     } else {
       ok("bandera encendida: /api/me informa agendaEnabled:true", meOwner.json?.agendaEnabled === true);
+      marcoAislamiento(9);
       await us1EquipoCatalogo({ ownerJar, jarA });
       await us5FotoYHorario({ ownerJar, jarA, sql, orgId, serviceId: svc.id });
       await slice5ReservasYTablero({ ownerJar, jarA, sql, orgId, svc, createdStaffIds });
@@ -3702,6 +3768,7 @@ async function aislamientoChecks() {
     if (pendientes > 0) {
       console.log(`  (${pendientes} verificación(es) PENDIENTE: pertenecen a slices siguientes y se activan allí)`);
     }
+    cierreAislamiento(encendida);
   }
 }
 

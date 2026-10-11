@@ -720,7 +720,7 @@ cambiar el precio recibe 403 y no cambia nada.
       `putStaffHours` (normaliza, `null` vuelve a heredar); crear
       `src/app/api/staff/[id]/hours/route.ts` (`GET` owner/reception/staff
       propio; `PUT` owner o staff propio, reception → 403, **200**)
-- [ ] T096 [US5] Editar `src/server/agenda/staff.ts`: `StaffDTO` completo
+- [X] T096 [US5] Editar `src/server/agenda/staff.ts`: `StaffDTO` completo
       (`hasPhoto`, `photoUrl` versionada `?v=`, `effectiveWeeklyHours`,
       `hasAccount`) y la edición del subconjunto del staff (bio, teléfono,
       color); confirmar que `GET /api/staff/[id]` entrega servicios.
@@ -728,7 +728,7 @@ cambiar el precio recibe 403 y no cambia nada.
       (`toStaffDTO` sigue puro: sin argumentos extra, los tests viejos ven
       `hasPhoto: false` y `effectiveWeeklyHours === weeklyHours`). PATCH sigue
       solo del dueño: el subconjunto del staff no se abrió en esta tanda.
-- [ ] T097 [US5] Correr `pnpm test:e2e`: verificaciones de US5 (T089) y (3)
+- [X] T097 [US5] Correr `pnpm test:e2e`: verificaciones de US5 (T089) y (3)
       «staff no cambia precios» en verde. Registrar RED→GREEN
 
 ### UI de perfil (US5) — Slice 8
@@ -878,57 +878,57 @@ verificados.
 **Purpose**: matriz de CI con la bandera apagada y encendida, documentación,
 mapa de código y el gate final.
 
-- [ ] T121 [P] Editar `tests/unit/agenda-flag.test.ts`: con `AGENDA` ausente
+- [X] T121 [P] Editar `tests/unit/agenda-flag.test.ts`: con `AGENDA` ausente
       todas las rutas nuevas (`/api/staff*`, `/api/services*`,
       `/api/calendar/board`) responden 404 (`agendaDisabledResponse`) **antes**
       de la autenticación; `/api/me` informa `agendaEnabled:false`; el prompt
       del agente no cambia
-- [ ] T122 [P] Editar `.github/workflows/ci.yml`: agregar un `services:
+- [X] T122 [P] Editar `.github/workflows/ci.yml`: agregar un `services:
       postgres` (imagen `postgres:16-alpine`, la misma del compose, trae
       `btree_gist`) y `TEST_DATABASE_URL` al job `gates` para que
       `tests/unit/migration-0014.test.ts` corra en las dos configuraciones de la
       matriz (`default` sin agenda y `completo` con `AGENDA: "on"`); `pnpm
       test:e2e` necesita la app viva y no corre en CI (se corre local en ambas
       configuraciones, ver T134 y T135)
-- [ ] T123 [P] Crear `docs/adr-003-agenda-multi-profesional.md`: decisión
+- [X] T123 [P] Crear `docs/adr-003-agenda-multi-profesional.md`: decisión
       registrada (EXCLUDE + `btree_gist`, roles en `member.role` con `member` ≡
       `reception`, `withAuth` deny-by-default, foto en `bytea`, advisory locks
       para bloqueos del local), alternativas rechazadas y costos (Complexity
       Tracking del plan); patrón de `docs/adr-002-conectores-de-agenda.md`
-- [ ] T124 [P] Crear `docs/agenda-multi-profesional.md`: guía para el dueño y
+- [X] T124 [P] Crear `docs/agenda-multi-profesional.md`: guía para el dueño y
       para quien adapta la instancia — roles y qué ve cada uno, alta de equipo y
       catálogo, horarios con herencia, cómo funciona «cualquiera», el
       requisito `btree_gist` y qué hacer si el rol no puede `CREATE EXTENSION`
-- [ ] T125 [P] Editar `CLAUDE.md` (fila del mapa del código: equipo/servicios/
+- [X] T125 [P] Editar `CLAUDE.md` (fila del mapa del código: equipo/servicios/
       roles → `src/server/agenda/{staff,catalog,hours,scope,locks,assignment}.ts`,
       `src/lib/auth/{roles,actor}.ts`, `src/lib/api.ts` (`withAuth`
       deny-by-default); nota: el no-solapamiento vive en `booking_staff_no_overlap`
       de la migración `0014`, no en el código) y `specs/README.md` (fila de
       `018` en la tabla de specs: ciclo completo)
-- [ ] T126 [P] Editar `README.md` (sección de agenda, ~línea 102 y la de
+- [X] T126 [P] Editar `README.md` (sección de agenda, ~línea 102 y la de
       «motor de agendamiento», ~línea 457): equipo, catálogo, calendario global y
       roles de acceso; sigue siendo opcional y apagada por defecto
-- [ ] T127 [P] Crear `tests/e2e/us-agenda-multi.md`: guion manual/automatizado
+- [X] T127 [P] Crear `tests/e2e/us-agenda-multi.md`: guion manual/automatizado
       de US1..US6 (formato de `tests/e2e/us-agenda.md`) que enlaza cada paso a su
       verificación en `aislamientoChecks()` / `agenteMultiChecks()` y al
       recorrido del quickstart §4
-- [ ] T128 Crear `scripts/e2e-agenda-multi-ui.mjs` (Playwright, patrón de
+- [X] T128 Crear `scripts/e2e-agenda-multi-ui.mjs` (Playwright, patrón de
       `scripts/e2e-favicon.mjs`): SC-003 — recepción agenda una cita presencial
       desde `/calendar` en ≤ 30 s cronometrados; SC-004 — el login del staff
       aterriza directo en `/my-agenda`; SC-007 — una cita del agente aparece en el
       calendario < 5 s por SSE; capturas de las pantallas nuevas (columnas del
       calendario, perfil, foto) como evidencia, marcadas **pendiente de
       verificación humana**
-- [ ] T129 Registrar `scripts/e2e-agenda-multi-ui.mjs` en `package.json`
+- [X] T129 Registrar `scripts/e2e-agenda-multi-ui.mjs` en `package.json`
       (script `test:e2e:agenda-ui`) y llamarlo desde el cierre documentado en
       `tests/e2e/us-agenda-multi.md`; `aislamientoChecks()` y
       `agenteMultiChecks()` ya corren dentro de `pnpm test:e2e`
-- [ ] T130 Cerrar el gate de aislamiento en `scripts/e2e-selftest.mjs`: añadir
+- [X] T130 Cerrar el gate de aislamiento en `scripts/e2e-selftest.mjs`: añadir
       un resumen final de `aislamientoChecks()` que falle el proceso si
       cualquiera de las verificaciones (1)–(9) no corrió; confirmar que cubre
       FR-036 literalmente — lectura cruzada, escritura cruzada, staff no cambia
       precios, y dos reservas simultáneas solapadas → exactamente una
-- [ ] T131 Revisar la lista de verificación por criterio de éxito del
+- [X] T131 Revisar la lista de verificación por criterio de éxito del
       quickstart §7 (SC-001..SC-007) y actualizar `specs/018-agenda-multi-profesional/checklists/`
       si algún requisito del spec quedó sin tarea ni prueba; resolver las
       decisiones de producto pendientes del plan (contraseña temporal vs.
@@ -942,21 +942,21 @@ mapa de código y el gate final.
 Ninguna tarea ni slice se declara Hecha sin esto, en este orden, y ninguno se
 delega al usuario:
 
-- [ ] T132 Gate técnico: `pnpm typecheck && pnpm lint && pnpm build && pnpm test`
+- [X] T132 Gate técnico: `pnpm typecheck && pnpm lint && pnpm build && pnpm test`
       en verde (incluye `migration-0014.test.ts` con `TEST_DATABASE_URL`)
-- [ ] T133 Migración: aplicar `0014` dos veces sobre una BD con datos de la 015
+- [X] T133 Migración: aplicar `0014` dos veces sobre una BD con datos de la 015
       y repetir las consultas del quickstart §2; sin cambios en la segunda corrida
-- [ ] T134 `pnpm test:e2e` con la app viva y mocks, **`AGENDA=on`**
+- [X] T134 `pnpm test:e2e` con la app viva y mocks, **`AGENDA=on`**
       (`WA_MOCK_ENABLED=true`, `META_GRAPH_BASE_URL` → wa-mock,
       `OPENROUTER_BASE_URL` → ai-mock): `main()`, `agendaChecks()` (015),
       `aislamientoChecks()` y `agenteMultiChecks()` verdes; códigos exactos
-- [ ] T135 `pnpm test:e2e` con **`AGENDA` ausente**: toda la superficie nueva
+- [X] T135 `pnpm test:e2e` con **`AGENDA` ausente**: toda la superficie nueva
       responde 404, `/api/me` informa `agendaEnabled:false`, no existen
       `/calendar` ni `/my-agenda`, y el resto de la instancia funciona igual
-- [ ] T136 Recorrido de `specs/018-agenda-multi-profesional/quickstart.md` §4
+- [X] T136 Recorrido de `specs/018-agenda-multi-profesional/quickstart.md` §4
       con Playwright (T128) y camino infeliz (carrera, proveedor de IA caído,
       hueco ocupado, cuenta sin perfil, perfil desactivado) sin colgarse
-- [ ] T137 Diagnosticar y corregir cualquier fallo observado y re-verificar
+- [X] T137 Diagnosticar y corregir cualquier fallo observado y re-verificar
       hasta verde (loop de auto-corrección); lo visual se anota **pendiente de
       verificación humana** con capturas (Constitución V/IX)
 

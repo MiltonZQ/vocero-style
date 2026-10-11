@@ -27,6 +27,24 @@ jobs:
     name: ${{ matrix.config.name }} · typecheck · lint · test · build
     runs-on: ubuntu-latest
 
+    # Postgres de la imagen del compose, para que migration-0014.test.ts
+    # deje de saltarse. El usuario de la imagen es superusuario (CREATEDB):
+    # el helper abre un esquema propio y la migración puede crear btree_gist.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: vocero_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d vocero_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
     # Los módulos opcionales (canales, agenda) se encienden con variables de
     # despliegue, así que el código que viaja en main tiene que servir en las
     # dos configuraciones — y eso no se sabe corriendo solo una.
@@ -48,6 +66,7 @@ jobs:
     env:
       CHANNELS: ${{ matrix.config.channels }}
       AGENDA: ${{ matrix.config.agenda }}
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vocero_test
 
     steps:
       - uses: actions/checkout@v7
