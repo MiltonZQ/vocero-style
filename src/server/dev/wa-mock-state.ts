@@ -52,8 +52,22 @@ export type CapiMockEvent = {
   at: string;
 };
 
+/**
+ * 019 — Un "leído" (con o sin "escribiendo…") que el CRM le mandó al mock.
+ * No es un mensaje saliente: va aparte para no contaminar el outbox.
+ */
+export type ReadEntry = {
+  n: number;
+  phoneNumberId: string;
+  messageId: string;
+  /** `typing_indicator.type`, o null si fue solo el "leído". */
+  typing: string | null;
+  at: string;
+};
+
 type WaMockState = {
   outbox: OutboxEntry[];
+  reads: ReadEntry[];
   templates: MockTemplate[];
   capiEvents: CapiMockEvent[];
   counter: number;
@@ -65,6 +79,7 @@ export function getWaMockState(): WaMockState {
   if (!globalForMock.__waMockState) {
     globalForMock.__waMockState = {
       outbox: [],
+      reads: [],
       templates: [],
       capiEvents: [],
       counter: 0,
@@ -76,6 +91,7 @@ export function getWaMockState(): WaMockState {
 export function resetWaMockState(): void {
   globalForMock.__waMockState = {
     outbox: [],
+    reads: [],
     templates: [],
     capiEvents: [],
     counter: 0,

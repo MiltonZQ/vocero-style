@@ -1447,7 +1447,7 @@ async function agendaChecks() {
       const trasOferta = await salientesDe();
       ok(
         "el agente OFRECE horarios (hay respuesta, no silencio)",
-        trasOferta.length > 0 && /\d{2}:\d{2}/.test(trasOferta.at(-1)?.text ?? ""),
+        trasOferta.length > 0 && /\d{1,2}:\d{2}/.test(trasOferta.at(-1)?.text ?? ""),
         `salientes=${trasOferta.length} ultimo=${(trasOferta.at(-1)?.text ?? "").slice(0, 80)}`
       );
 
@@ -1824,20 +1824,19 @@ async function agenteMultiChecks() {
       ok("(1) hay conversación para el profesional nombrado", Boolean(conv1));
       if (conv1) {
         await hasta(async () =>
-          (await salientes(conv1.id)).some((m) => /a las \d{2}:\d{2}/.test(m.text ?? ""))
+          (await salientes(conv1.id)).some((m) => /a las? \d{1,2}:\d{2}/.test(m.text ?? ""))
         );
         const oferta = (await salientes(conv1.id)).find((m) =>
-          /a las \d{2}:\d{2}/.test(m.text ?? "")
+          /a las? \d{1,2}:\d{2}/.test(m.text ?? "")
         );
-        // 019: con profesional ya elegido, la oferta son opciones numeradas SIN
-        // repetir el nombre en cada línea; la prueba de que son de E2E Luz es la
-        // cita que queda más abajo (staff y duración efectiva).
-        const lineas = (oferta?.text ?? "")
-          .split("\n")
-          .filter((line) => /^\d\) .*a las \d{2}:\d{2}/.test(line));
+        // 019: con profesional ya elegido, la oferta es una frase natural SIN
+        // repetir el nombre; la prueba de que son de E2E Luz es la cita que
+        // queda más abajo (staff y duración efectiva).
         ok(
-          "(1) la oferta son opciones numeradas y no nombra a otro profesional",
-          lineas.length > 0 && !(oferta?.text ?? "").includes(sole.displayName),
+          "(1) la oferta es una frase natural y no nombra a otro profesional",
+          /tenemos disponible a las? \d{1,2}:\d{2}/.test(oferta?.text ?? "") &&
+            (oferta?.text ?? "").includes("¿Cuál de estos horarios prefieres") &&
+            !(oferta?.text ?? "").includes(sole.displayName),
           (oferta?.text ?? "").slice(0, 200)
         );
 
@@ -1867,15 +1866,15 @@ async function agenteMultiChecks() {
       ok("(2) hay conversación para cualquiera", Boolean(conv2));
       if (conv2) {
         await hasta(async () =>
-          (await salientes(conv2.id)).some((m) => /a las \d{2}:\d{2}/.test(m.text ?? ""))
+          (await salientes(conv2.id)).some((m) => /a las? \d{1,2}:\d{2}/.test(m.text ?? ""))
         );
         const oferta = (await salientes(conv2.id)).find((m) =>
-          /a las \d{2}:\d{2}/.test(m.text ?? "")
+          /a las? \d{1,2}:\d{2}/.test(m.text ?? "")
         );
         const texto = oferta?.text ?? "";
         ok(
           "(2) la oferta de cualquiera no nombra profesional",
-          /a las \d{2}:\d{2}/.test(texto) &&
+          /a las? \d{1,2}:\d{2}/.test(texto) &&
             !texto.includes(EXTRA_STAFF_NAME) &&
             !texto.includes(sole.displayName),
           texto.slice(0, 200)
@@ -1913,7 +1912,7 @@ async function agenteMultiChecks() {
           "(3) dice quién sí lo ofrece, sin horarios y sin cita",
           /no hace/i.test(texto) &&
             texto.includes(EXTRA_STAFF_NAME) &&
-            !/a las \d{2}:\d{2}/.test(texto) &&
+            !/a las? \d{1,2}:\d{2}/.test(texto) &&
             citas.length === 0,
           `citas=${citas.length} texto=${texto.slice(0, 200)}`
         );
@@ -1931,7 +1930,7 @@ async function agenteMultiChecks() {
       ok("(4) hay conversación para ocupar el hueco", Boolean(conv4));
       if (conv4) {
         await hasta(async () =>
-          (await salientes(conv4.id)).some((m) => /a las \d{2}:\d{2}/.test(m.text ?? ""))
+          (await salientes(conv4.id)).some((m) => /a las? \d{1,2}:\d{2}/.test(m.text ?? ""))
         );
         const fromH = `5214636${corrida}`;
         await decir(fromH, "Lead 018 helper", "hola");
@@ -1968,7 +1967,7 @@ async function agenteMultiChecks() {
         ok(
           "(4) hueco ocupado: disculpa, alternativas y cero citas de esa conversación",
           /ocupar|perdón|perdon/i.test(texto) &&
-            /a las \d{2}:\d{2}|• /.test(texto) &&
+            /a las? \d{1,2}:\d{2}|• /.test(texto) &&
             despues.length === antes,
           `antes=${antes} despues=${despues.length} texto=${texto.slice(-240)}`
         );
@@ -2306,6 +2305,20 @@ async function barberBotChecks() {
     ((await api("/api/bookings")).json?.bookings ?? []).filter(
       (b) => b.conversationId === id && b.kind !== "block"
     );
+  const wamidDe = (k) => `wamid.e2e.019.${corrida}.${k}`;
+  const mockEstado = async () => (await api("/api/dev/wa-mock/outbox")).json ?? {};
+  /** Horas de una oferta en prosa ("9:00 a. m., 9:30 a. m. y 10:00 a. m.") → "HH:mm". */
+  const horasOfrecidas = (texto) =>
+    [...texto.matchAll(/(\d{1,2}):(\d{2}) ([ap])\. m\./g)].map((m) => {
+      const h12 = Number(m[1]) % 12;
+      const h = m[3] === "p" ? h12 + 12 : h12;
+      return `${String(h).padStart(2, "0")}:${m[2]}`;
+    });
+  /** Cómo lo diría el cliente: "a las 5:30". */
+  const dicho = (hhmm) => {
+    const [h, m] = hhmm.split(":");
+    return `a las ${Number(h) % 12 || 12}:${m}`;
+  };
 
   const settingsAntes = (await api("/api/calendar/settings")).json?.settings ?? {};
   let barberoId = null;
@@ -2333,8 +2346,9 @@ async function barberBotChecks() {
       body: JSON.stringify({
         name: BARBER_SERVICE_NAME,
         durationMinutes: 40,
-        priceCents: 15000,
-        currency: "MXN",
+        // 019: COP para probar el separador de miles ($25.000, no $25000).
+        priceCents: 2500000,
+        currency: "COP",
       }),
     });
     fadeId = fade.json?.service?.id ?? null;
@@ -2384,6 +2398,74 @@ async function barberBotChecks() {
     ok("un enlace de Maps que no es https se rechaza (422)", mapasMalo.res.status === 422,
       `status=${mapasMalo.res.status}`);
 
+    console.log("\n-- saludo: bienvenida y qué servicio, sin catálogo con precios --");
+    const fromG = `5214644${corrida}`;
+    const wamidSaludo = wamidDe(n + 1);
+    await decir(fromG, "Lead 019 saludo", "Hola");
+    const convG = await convDe(fromG);
+    ok("hay conversación del saludo", Boolean(convG));
+    if (convG) {
+      const saludo = await respuesta(convG.id, 1);
+      const cg = await refrescar(convG.id);
+      ok(
+        "'Hola' → '¿Cómo estás?' y '¿En cuál de nuestros servicios…', nombrando el servicio",
+        saludo.includes("¿Cómo estás?") &&
+          saludo.includes("¿En cuál de nuestros servicios") &&
+          saludo.includes(BARBER_SERVICE_NAME) &&
+          !saludo.includes("$"),
+        saludo
+      );
+      ok("el saludo no escala a una persona", !cg?.handoffAt && !cg?.handoffReason && cg?.aiEnabled === true,
+        JSON.stringify({ reason: cg?.handoffReason }));
+      const dbUrl = process.env.DATABASE_URL ?? "";
+      let host = "";
+      try {
+        host = new URL(dbUrl).hostname;
+      } catch {}
+      if (["localhost", "127.0.0.1", "::1", "[::1]"].includes(host)) {
+        const { default: postgres } = await import("postgres");
+        const sql = postgres(dbUrl, { max: 1 });
+        try {
+          const filas = await sql`
+            select service_id from booking_draft where conversation_id = ${convG.id}
+          `;
+          ok(
+            "el saludo no deja servicio elegido en el borrador",
+            filas.every((f) => f.service_id === null),
+            JSON.stringify(filas)
+          );
+        } finally {
+          await sql.end();
+        }
+      } else {
+        console.log("  (saludo: BD no local, se omite la lectura del borrador)");
+      }
+      const estado = await mockEstado();
+      const leido = (estado.reads ?? []).find((r) => r.messageId === wamidSaludo);
+      ok(
+        "conversación real: el CRM marcó leído y mandó 'escribiendo…' al mensaje entrante",
+        leido?.typing === "text",
+        JSON.stringify({ reads: (estado.reads ?? []).length, leido })
+      );
+    }
+
+    console.log("\n-- sin servicio dicho: catálogo con el precio en formato local --");
+    const fromK = `5214645${corrida}`;
+    await decir(fromK, "Lead 019 catalogo", "quiero agendar");
+    const convK = await convDe(fromK);
+    if (convK) {
+      const cat = await respuesta(convK.id, 1);
+      ok(
+        "el catálogo pregunta '¿En cuál de nuestros servicios…' con el precio con separador de miles",
+        cat.includes("¿En cuál de nuestros servicios") &&
+          cat.includes(`${BARBER_SERVICE_NAME} ($25.000 COP)`) &&
+          !/2500000|25000(?![.\d])/.test(cat),
+        cat
+      );
+    } else {
+      ok("hay conversación del catálogo", false);
+    }
+
     console.log("\n-- camino feliz: servicio + barbero + día/hora en un mensaje --");
     const fromH = `5214640${corrida}`;
     await decir(
@@ -2395,15 +2477,19 @@ async function barberBotChecks() {
     ok("hay conversación del camino feliz", Boolean(convH));
     if (convH) {
       const oferta = await respuesta(convH.id, 1);
-      const opciones = oferta.split("\n").filter((l) => /^\d\) .*a las \d{2}:\d{2}/.test(l));
+      const opciones = horasOfrecidas(oferta);
       ok(
-        "el bot ofrece opciones numeradas (al menos 2) de una vez",
-        opciones.length >= 2 && /1\) /.test(oferta) && /2\) /.test(oferta),
+        "el bot ofrece al menos 2 horarios en una frase natural y pregunta cuál prefiere",
+        opciones.length >= 2 &&
+          /tenemos disponible a las \d{1,2}:\d{2}/.test(oferta) &&
+          oferta.includes("¿Cuál de estos horarios prefieres") &&
+          !/^\d\) /m.test(oferta) &&
+          !/Responde con el número/.test(oferta),
         oferta.slice(0, 300)
       );
       ok(
         "las opciones caen después de las 17:00 (la hora pedida)",
-        opciones.length > 0 && opciones.every((l) => /a las (1[7-9]|2\d):\d{2}/.test(l)),
+        opciones.length > 0 && opciones.every((h) => Number(h.slice(0, 2)) >= 17),
         opciones.join(" | ")
       );
 
@@ -2419,8 +2505,7 @@ async function barberBotChecks() {
           nueva?.durationMinutes === 40,
         JSON.stringify({ staff: nueva?.staff, service: nueva?.service, d: nueva?.durationMinutes })
       );
-      const segunda = opciones[1] ?? "";
-      const hora2 = /a las (\d{2}:\d{2})/.exec(segunda)?.[1] ?? "?";
+      const hora2 = opciones[1] ?? "?";
       ok(
         "la cita quedó en la hora de la opción 2",
         Boolean(nueva) && new Date(nueva.scheduledAtUtc).toLocaleTimeString("es-MX", {
@@ -2433,12 +2518,12 @@ async function barberBotChecks() {
       );
 
       await hasta(async () =>
-        (await salientes(convH.id)).some((m) => (m.text ?? "").includes("Cita confirmada"))
+        (await salientes(convH.id)).some((m) => (m.text ?? "").includes("tu cita quedó agendada"))
       );
       const conf = (await salientes(convH.id)).find((m) =>
-        (m.text ?? "").includes("Cita confirmada")
+        (m.text ?? "").includes("tu cita quedó agendada")
       )?.text ?? "";
-      ok("llega la confirmación determinista", conf.includes("Cita confirmada"), conf.slice(0, 200));
+      ok("llega la confirmación determinista", conf.includes("tu cita quedó agendada"), conf.slice(0, 200));
       ok("la confirmación dice la duración (40 min)", conf.includes("40 min"), conf);
       ok("la confirmación dice 'minutos antes' (5)", /5 minutos antes/.test(conf), conf);
       ok(
@@ -2448,7 +2533,7 @@ async function barberBotChecks() {
       );
       ok(
         "la confirmación nombra al barbero y el precio",
-        conf.includes(BARBER_STAFF_NAME) && conf.includes("$150"),
+        conf.includes(BARBER_STAFF_NAME) && conf.includes("$25.000 COP") && !/2500000|25000(?![.\d])/.test(conf),
         conf
       );
       ok(
@@ -2456,6 +2541,136 @@ async function barberBotChecks() {
         !/meet\.|zoom|sala-fija/i.test(conf) && !nueva?.meetingLink,
         JSON.stringify({ conf, link: nueva?.meetingLink })
       );
+    }
+
+    console.log("\n-- reserva por hora: 'a las <hora>' elige ese horario ofrecido --");
+    const fromT = `5214646${corrida}`;
+    await decir(
+      fromT,
+      "Lead 019 hora",
+      `quiero un ${BARBER_SERVICE_NAME} con ${BARBER_STAFF_NAME} mañana a las 5`
+    );
+    const convT = await convDe(fromT);
+    if (convT) {
+      const ofertaT = await respuesta(convT.id, 1);
+      const horasT = horasOfrecidas(ofertaT);
+      const elegida = horasT[1] ?? null;
+      ok("la oferta de la reserva por hora trae al menos 2 horarios", horasT.length >= 2, ofertaT.slice(0, 200));
+      if (elegida) {
+        const antesT = await citasDe(convT.id);
+        await decir(fromT, "Lead 019 hora", `me sirve ${dicho(elegida)}`);
+        await hasta(async () => (await citasDe(convT.id)).length > antesT.length);
+        const nuevaT = (await citasDe(convT.id)).find((b) => !antesT.some((p) => p.id === b.id));
+        const horaCita = nuevaT
+          ? new Date(nuevaT.scheduledAtUtc).toLocaleTimeString("es-MX", {
+              timeZone: leido?.timezone ?? "America/Mexico_City",
+              hour: "2-digit",
+              minute: "2-digit",
+              hour12: false,
+            })
+          : "?";
+        ok(
+          `'${dicho(elegida)}' (el 2.º ofrecido, ${elegida}) crea la cita en esa hora`,
+          Boolean(nuevaT) && horaCita === elegida && nuevaT?.staff?.id === barberoId,
+          `esperada=${elegida} cita=${horaCita} oferta=${horasT.join(",")}`
+        );
+      }
+    } else {
+      ok("hay conversación de la reserva por hora", false);
+    }
+
+    console.log("\n-- ubicación: pin de WhatsApp a partir del iframe de Google Maps --");
+    const IFRAME =
+      '<iframe src="https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d1665.0830673235978!2d-74.1632885539481!3d4.598865027392155!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f13.1!3m3!1m2!1s0x8e3f9f6954b407d3%3A0x81aa8c852b420af8!2sPapeler%C3%ADa%20Esmeralda!5e0!3m2!1ses!2sco!4v1791744951649!5m2!1ses!2sco" width="600" height="450"></iframe>';
+    const { parseMapsCoordinates, describeMapsError } = await import(
+      new URL("../src/lib/maps-coordinates.ts", import.meta.url).href
+    );
+    const pegado = parseMapsCoordinates(IFRAME);
+    ok(
+      "el iframe del dueño se convierte en coordenadas (lat 4.5988…, lng -74.1632…)",
+      pegado.ok && String(pegado.lat).startsWith("4.5988") && String(pegado.lng).startsWith("-74.1632"),
+      JSON.stringify(pegado)
+    );
+    const corto = parseMapsCoordinates("https://maps.app.goo.gl/AbCdEf123");
+    ok(
+      "un enlace corto maps.app.goo.gl no se acepta y explica qué pegar (error en español)",
+      !corto.ok && corto.error === "short_link" && /enlace corto.*Insertar un mapa/s.test(describeMapsError(corto.error)),
+      JSON.stringify(corto)
+    );
+    // La tarjeta de ajustes hace esa conversión en el navegador; la API recibe números.
+    const mitad = await api("/api/calendar/settings", {
+      method: "PUT",
+      body: JSON.stringify({ latitude: 4.5988 }),
+    });
+    ok("latitud sin longitud se rechaza (422)", mitad.res.status === 422, `status=${mitad.res.status}`);
+    const fuera = await api("/api/calendar/settings", {
+      method: "PUT",
+      body: JSON.stringify({ latitude: 91, longitude: 0 }),
+    });
+    ok("latitud fuera de rango se rechaza (422)", fuera.res.status === 422, `status=${fuera.res.status}`);
+    const conPin = await api("/api/calendar/settings", {
+      method: "PUT",
+      body: JSON.stringify({ latitude: pegado.lat, longitude: pegado.lng }),
+    });
+    const sLeidos = (await api("/api/calendar/settings")).json?.settings;
+    ok(
+      "las coordenadas se guardan y vuelven iguales",
+      conPin.res.ok &&
+        Math.abs((sLeidos?.latitude ?? 0) - pegado.lat) < 1e-9 &&
+        Math.abs((sLeidos?.longitude ?? 0) - pegado.lng) < 1e-9,
+      JSON.stringify({ lat: sLeidos?.latitude, lng: sLeidos?.longitude })
+    );
+
+    const fromP = `5214647${corrida}`;
+    await decir(
+      fromP,
+      "Lead 019 pin",
+      `quiero un ${BARBER_SERVICE_NAME} con ${BARBER_STAFF_NAME} mañana a las 5`
+    );
+    const convP = await convDe(fromP);
+    if (convP) {
+      await respuesta(convP.id, 1);
+      const antesP = await citasDe(convP.id);
+      await decir(fromP, "Lead 019 pin", "la 1");
+      await hasta(async () => (await citasDe(convP.id)).length > antesP.length);
+      await hasta(async () =>
+        (await salientes(convP.id)).some((m) => (m.text ?? "").includes("tu cita quedó agendada"))
+      );
+      const confP = (await salientes(convP.id)).find((m) =>
+        (m.text ?? "").includes("tu cita quedó agendada")
+      )?.text ?? "";
+      ok(
+        "con pin, el texto de confirmación trae la dirección pero ya no la línea del enlace de Maps",
+        confP.includes(DIRECCION) && !confP.includes(MAPAS) && !/maps\./i.test(confP),
+        confP
+      );
+      const pinOk = await hasta(async () =>
+        ((await mockEstado()).outbox ?? []).some(
+          (e) => e.type === "location" && String(e.to).endsWith(fromP.slice(3))
+        )
+      );
+      const outbox = (await mockEstado()).outbox ?? [];
+      const mios = outbox.filter((e) => String(e.to).endsWith(fromP.slice(3)));
+      const idxTexto = mios.findIndex((e) =>
+        String(e.body?.text?.body ?? "").includes("tu cita quedó agendada")
+      );
+      const siguiente = mios[idxTexto + 1];
+      const loc = siguiente?.body?.location;
+      ok(
+        "el wa-mock recibió un mensaje type:'location' justo después del texto de confirmación",
+        pinOk && siguiente?.type === "location",
+        JSON.stringify({ pinOk, tipos: mios.map((e) => e.type) })
+      );
+      ok(
+        "el pin lleva las coordenadas del iframe, la dirección y el nombre del negocio",
+        Math.abs((loc?.latitude ?? 0) - pegado.lat) < 1e-9 &&
+          Math.abs((loc?.longitude ?? 0) - pegado.lng) < 1e-9 &&
+          loc?.address === DIRECCION &&
+          typeof loc?.name === "string" && loc.name.length > 0,
+        JSON.stringify(loc)
+      );
+    } else {
+      ok("hay conversación del pin", false);
     }
 
     console.log("\n-- handoff: cancelar cita --");
@@ -2520,7 +2735,7 @@ async function barberBotChecks() {
       ok(
         "1.er JSON inválido: re-pregunta el paso (sin romper) y no escala",
         (await salientes(convU.id)).length === n1 + 1 &&
-          /Responde con el número|¿con quién|¿Qué servicio/.test(reAsk) &&
+          /¿Con cuál de nuestros profesionales deseas ser atendido\?|¿En cuál de nuestros servicios|¿Cuál de estos horarios prefieres/.test(reAsk) &&
           !c?.handoffAt && !c?.handoffReason,
         JSON.stringify({ reAsk: reAsk.slice(0, 160), reason: c?.handoffReason })
       );
@@ -2537,8 +2752,20 @@ async function barberBotChecks() {
       ok("hay conversación del camino infeliz", false);
     }
 
+    console.log("\n-- nota de voz --");
+    // transcribe.ts apunta fijo a api.openai.com (sin base URL configurable) y
+    // el wa-mock solo entrega texto: sin una clave real de Whisper no hay forma
+    // de ejercitarla de punta a punta. Cobertura: tests/unit/agent-turn-voice-typing.test.ts.
+    pendiente(
+      "una nota de voz transcrita conduce la reserva de punta a punta",
+      false,
+      "019",
+      "Whisper no es mockeable (URL fija a api.openai.com) y el wa-mock no entrega audio; cubierto por pruebas unitarias"
+    );
+
     console.log("\n-- Laboratorio con las personas de la barbería --");
     const outboxAntes = ((await api("/api/dev/wa-mock/outbox")).json?.outbox ?? []).length;
+    const leidosAntes = ((await api("/api/dev/wa-mock/outbox")).json?.reads ?? []).length;
     const corridaLab = await api("/api/lab/runs", { method: "POST" });
     ok("el Laboratorio acepta la corrida (202)",
       corridaLab.res.status === 202 && Boolean(corridaLab.json?.runId),
@@ -2581,6 +2808,9 @@ async function barberBotChecks() {
       const outboxDespues = ((await api("/api/dev/wa-mock/outbox")).json?.outbox ?? []).length;
       ok("el Laboratorio no envió nada a WhatsApp (sandbox)", outboxDespues === outboxAntes,
         `antes=${outboxAntes} despues=${outboxDespues}`);
+      const leidosDespues = ((await api("/api/dev/wa-mock/outbox")).json?.reads ?? []).length;
+      ok("el Laboratorio tampoco mandó 'leído' ni 'escribiendo…' (conversaciones is_test)",
+        leidosDespues === leidosAntes, `antes=${leidosAntes} despues=${leidosDespues}`);
     }
   } finally {
     await retirarExtrasAgenda();
@@ -2594,6 +2824,8 @@ async function barberBotChecks() {
         maxDaysAhead: settingsAntes.maxDaysAhead,
         locationAddress: null,
         locationMapsUrl: null,
+        latitude: null,
+        longitude: null,
         arrivalLeadMinutes: settingsAntes.arrivalLeadMinutes ?? 5,
       }),
     });
