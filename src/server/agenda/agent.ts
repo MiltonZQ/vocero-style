@@ -383,6 +383,8 @@ export async function bookFromOffer(input: {
   startUtc: string;
   notes?: string | null;
   now?: Date;
+  /** 019 — cita presencial: sin reunión en ningún conector. */
+  skipMeeting?: boolean;
 }): Promise<BookingResult & { staffName: string | null; mentionName: boolean }> {
   const offers = await getOffers(input.organizationId, input.conversationId);
   const offered = findOffered(offers, input.startUtc);
@@ -425,6 +427,7 @@ export async function bookFromOffer(input: {
       serviceId,
       durationMinutes: duration,
       refreshOnTaken: false,
+      skipMeeting: input.skipMeeting,
       now: input.now,
     });
 

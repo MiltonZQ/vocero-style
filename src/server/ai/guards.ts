@@ -1,12 +1,10 @@
-import type { DraftStep, DraftWhen } from "@/server/agenda/draft";
+import type { DraftStep } from "@/server/agenda/draft";
+import type { AgendaModelAction } from "@/server/ai/actions";
 
 /**
  * 019 — Guardas del agente: validan en CÓDIGO que la acción del modelo tenga
  * sentido para el paso actual de la reserva. Si no, devuelven la directiva
  * del paso que falta en lugar de ejecutar la acción. Puro: sin BD.
- *
- * Los tipos de acción son el contrato mínimo que asume esta capa; el esquema
- * Zod real del agente (B4) debe producir uniones compatibles con `BotAction`.
  */
 
 export type HandoffReason =
@@ -17,20 +15,13 @@ export type HandoffReason =
   | "atascado"
   | "error";
 
+/**
+ * Una sola fuente de verdad: las acciones de agenda son las del esquema Zod de
+ * `actions.ts`; el resto (lead, etapa, none) pasa sin validación de paso.
+ */
 export type BotAction =
-  | {
-      action: "update_draft";
-      service?: string;
-      /** Nombre de profesional o el literal `any`. */
-      staff?: string;
-      when?: DraftWhen;
-      reply?: string;
-    }
-  | { action: "book_slot"; option: number }
-  | { action: "my_bookings" }
-  | { action: "reply"; text: string }
-  | { action: "handoff"; reason: HandoffReason; farewell?: string }
-  | { action: "update_lead" | "move_stage"; [field: string]: unknown };
+  | AgendaModelAction
+  | { action: "none" | "update_lead" | "move_stage"; [field: string]: unknown };
 
 export type GuardContext = {
   draft: { serviceId: string | null; staffChoice: string | null };

@@ -134,8 +134,8 @@ describeDb("booking draft (BD real)", () => {
     await eph.applyOne("0015_barber_bot_draft");
     const cols = await eph.run(
       `SELECT column_name FROM information_schema.columns
-        WHERE table_name = 'calendar_settings' AND column_name LIKE 'location_%'
-           OR column_name = 'arrival_lead_minutes'`
+        WHERE table_schema = current_schema() AND table_name = 'calendar_settings'
+          AND (column_name LIKE 'location_%' OR column_name = 'arrival_lead_minutes')`
     );
     expect(cols.length).toBe(3);
   });

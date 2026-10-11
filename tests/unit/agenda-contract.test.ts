@@ -133,32 +133,44 @@ describe("esquema y prompt del agente", () => {
     expect(off.safeParse({ action: "offer_slots", service: "Corte", staff: "Ana" }).success).toBe(
       false
     );
-    expect(off.safeParse({ action: "book_slot", startUtc: "2026-08-05T15:00:00.000Z" }).success).toBe(
-      false
-    );
+    expect(off.safeParse({ action: "book_slot", option: 1 }).success).toBe(false);
+    expect(off.safeParse({ action: "update_draft", service: "Fade" }).success).toBe(false);
+    expect(off.safeParse({ action: "my_bookings" }).success).toBe(false);
     expect(off.safeParse({ action: "reply", text: "hola" }).success).toBe(true);
   });
 
-  it("offer_slots gana service y staff opcionales; book_slot no cambia de entrada", () => {
+  // 019: reescrito. `offer_slots` y `book_slot{startUtc}` dejaron de ser acciones
+  // del modelo: el código ofrece y el modelo elige por número de opción.
+  it("con la agenda encendida el modelo usa update_draft, book_slot{option} y my_bookings", () => {
     const on = agentActionSchema(true);
-    expect(on.safeParse({ action: "offer_slots" }).success).toBe(true);
+    expect(on.safeParse({ action: "offer_slots" }).success).toBe(false);
     expect(
-      on.safeParse({ action: "offer_slots", service: "Corte clásico", staff: "Ana", reply: "hola" })
-        .success
-    ).toBe(true);
-    const booked = on.safeParse({
-      action: "book_slot",
-      startUtc: "2026-08-05T15:00:00.000Z",
-      reply: "ok",
+      on.safeParse({ action: "book_slot", startUtc: "2026-08-05T15:00:00.000Z" }).success
+    ).toBe(false);
+
+    const draft = on.safeParse({
+      action: "update_draft",
+      service: "Fade",
+      staff: null,
+      when: { day: "mañana", from: "14:00", to: null },
+      reply: "Va",
     });
-    expect(booked.success).toBe(true);
-    if (booked.success && booked.data.action === "book_slot") {
-      expect(booked.data).toEqual({
-        action: "book_slot",
-        startUtc: "2026-08-05T15:00:00.000Z",
-        reply: "ok",
+    expect(draft.success).toBe(true);
+    if (draft.success) {
+      expect(draft.data).toEqual({
+        action: "update_draft",
+        service: "Fade",
+        staff: undefined,
+        when: { day: "mañana", from: "14:00", to: undefined },
+        reply: "Va",
       });
     }
+
+    const booked = on.safeParse({ action: "book_slot", option: "2" });
+    expect(booked.success).toBe(true);
+    if (booked.success) expect(booked.data).toEqual({ action: "book_slot", option: 2 });
+    expect(on.safeParse({ action: "my_bookings" }).success).toBe(true);
+    expect(on.safeParse({ action: "handoff", reason: "llegada" }).success).toBe(true);
   });
 
   it("con la bandera apagada el prompt no gasta tokens de agenda ni de catálogo", () => {

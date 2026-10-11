@@ -25,28 +25,41 @@ const baseActions = [
   }),
 ] as const;
 
+/** Los modelos mandan `null` por "no aplica": se trata igual que omitido. */
+const optionalText = z
+  .string()
+  .nullish()
+  .transform((v) => v ?? undefined);
+
+const whenSchema = z
+  .object({ day: optionalText, from: optionalText, to: optionalText })
+  .nullish()
+  .transform((v) => v ?? undefined);
+
 /**
- * 015 — Las dos acciones de agenda. Solo se registran si esta instancia tiene
- * la bandera encendida: donde no hay agenda, el modelo ni siquiera puede
- * nombrarlas.
+ * 019 — El contrato de agenda del bot de barbería. Solo se registra si esta
+ * instancia tiene la bandera encendida: donde no hay agenda, el modelo ni
+ * siquiera puede nombrarlas.
  *
- * `reply` es una introducción opcional, NO la lista de horarios: los horarios
- * los pega el motor con las etiquetas reales. Y `startUtc` tiene que ser
- * exactamente uno de los que el sistema ofreció — si no, el motor lo rechaza y
- * se re-ofrece.
+ * El modelo NO ofrece horarios ni calcula fechas: dice qué decidió el cliente
+ * (`update_draft`, con `day` relativo) y qué opción numerada eligió
+ * (`book_slot`); el código ofrece, resuelve y reserva.
  */
 const agendaActions = [
   z.object({
-    action: z.literal("offer_slots"),
-    service: z.string().optional(),
-    staff: z.string().optional(),
-    reply: z.string().optional(),
+    action: z.literal("update_draft"),
+    service: optionalText,
+    /** Nombre del profesional o `any`. */
+    staff: optionalText,
+    when: whenSchema,
+    reply: optionalText,
   }),
   z.object({
     action: z.literal("book_slot"),
-    startUtc: z.string().min(1),
-    reply: z.string().optional(),
+    /** 1-3: la opción numerada que el cliente eligió. */
+    option: z.coerce.number().int(),
   }),
+  z.object({ action: z.literal("my_bookings") }),
 ] as const;
 
 export const AgentAction = z.discriminatedUnion("action", [
@@ -62,6 +75,12 @@ export function agentActionSchema(agenda: boolean) {
 }
 
 export type AgentActionType = z.infer<typeof AgentAction>;
+
+/** Las acciones propias de la agenda, base del tipo `BotAction` de las guardas. */
+export type AgendaModelAction = Extract<
+  AgentActionType,
+  { action: "update_draft" | "book_slot" | "my_bookings" | "reply" | "handoff" }
+>;
 
 /**
  * Resuelve el nombre de etapa devuelto por el modelo contra las etapas reales
@@ -79,14 +98,13 @@ export function resolveStage(
 
 /** Degrada una acción que no se pudo ejecutar (FR-021 / contrato ai.md). */
 export function degradeAction(action: AgentActionType): AgentActionType {
-  if (
-    action.action === "move_stage" ||
-    action.action === "offer_slots" ||
-    action.action === "book_slot"
-  ) {
+  if (action.action === "move_stage" || action.action === "update_draft") {
     return action.reply
       ? { action: "reply", text: action.reply }
       : { action: "none" };
+  }
+  if (action.action === "book_slot" || action.action === "my_bookings") {
+    return { action: "none" };
   }
   return action;
 }

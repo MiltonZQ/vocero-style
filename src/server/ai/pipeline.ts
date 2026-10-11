@@ -15,10 +15,19 @@ import {
   type AgentActionType,
 } from "@/server/ai/actions";
 import { matchesHandoffIntent } from "@/server/ai/handoff";
-import { buildAgentSystemPrompt } from "@/server/ai/prompts";
+import { buildAgentSystemPrompt, formatShopHours } from "@/server/ai/prompts";
 import { agendaEnabled } from "@/server/agenda/flag";
-import { bookSlot, loadActiveCatalog, offerSlots } from "@/server/agenda/agent";
-import { getOffers, mapaDeHuecosParaModelo } from "@/server/agenda/offers";
+import { loadActiveCatalog } from "@/server/agenda/agent";
+import {
+  loadAgendaContext,
+  loadAgendaState,
+  renderDraftState,
+  runAgendaAction,
+  runAgendaFailure,
+  type AgendaContext,
+  type AgendaDeps,
+  type AgendaState,
+} from "@/server/ai/agenda-turn";
 import { readMediaFile } from "@/server/whatsapp/media";
 import { transcribeAudio } from "@/server/ai/transcribe";
 
@@ -187,27 +196,26 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
   const catalog = agenda ? await loadActiveCatalog(organizationId) : undefined;
 
   /**
-   * 015 — Los huecos vigentes, con su instante exacto.
-   *
-   * `book_slot` exige el `startUtc` y `findOffered` compara por epoch, sin
-   * tolerancia. Pero al modelo solo le llegaban el prompt y el historial de
-   * TEXTO, donde están las etiquetas que leyó el cliente —«lun 7 sep, 11:00»—
-   * sin año, sin zona y sin la fecha de hoy. Con eso, acertar el instante era
-   * cuestión de suerte: el rechazo caía siempre en `slot_not_offered`, cuyo
-   * texto es fijo, y la conversación se quedaba en bucle repitiendo la lista.
-   *
-   * Es un agujero de INTEGRACIÓN: las pruebas de contrato pasan porque
-   * inyectan el ISO correcto, que es justo lo que el modelo no tenía.
-   *
-   * Sin oferta vigente no se añade nada, así que el modelo sigue obligado a
-   * ofrecer antes de reservar. Se entrega el catálogo COMPLETO, no solo los
-   * tres que se enseñaron: si el cliente pide otro día, ese hueco ya estaba
-   * registrado como ofrecido y ahora el modelo también lo conoce.
-   *
-   * Reportado por @Diony7004 en #50, con el diagnóstico ya hecho.
+   * 019 — Con la agenda encendida, el borrador de la conversación manda: el
+   * modelo ve el estado de AHORA (fecha de hoy, borrador, opciones numeradas)
+   * al FINAL, después del historial, y el código ofrece y reserva. Apagada, el
+   * turno es el de siempre.
    */
-  const ofertas = agenda ? await getOffers(organizationId, conversationId) : [];
-  const mapaDeHuecos = mapaDeHuecosParaModelo(ofertas);
+  let agendaCtx: AgendaContext | undefined;
+  let agendaState: AgendaState | undefined;
+  if (agenda && catalog) {
+    agendaCtx = await loadAgendaContext(conversation, catalog);
+    agendaState = await loadAgendaState(agendaCtx);
+  }
+  const agendaDeps: AgendaDeps = {
+    deliver: (text) => deliverReply(conversation, text),
+    handoff: (reason) => applyHandoff(conversationId, organizationId, reason),
+    notifyBooked: () =>
+      publish(organizationId, {
+        type: "conversation.updated",
+        data: { conversation: { id: conversationId } },
+      }),
+  };
 
   const messages: ChatMessage[] = [
     {
@@ -217,6 +225,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         kb,
         stages,
         agenda,
+        shopHours: agendaCtx ? formatShopHours(agendaCtx.settings.weeklyHours) : undefined,
         catalog: catalog
           ? {
               services: catalog.services.map((service) => ({
@@ -239,12 +248,8 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         role: m.direction === "in" ? ("user" as const) : ("assistant" as const),
         content: m.text!,
       })),
-    /**
-     * Va AL FINAL, después del historial: es el estado de AHORA, y ponerlo
-     * antes lo dejaría enterrado bajo la conversación en cuanto esta crezca.
-     */
-    ...(mapaDeHuecos
-      ? [{ role: "system" as const, content: mapaDeHuecos }]
+    ...(agendaCtx && agendaState
+      ? [{ role: "system" as const, content: renderDraftState(agendaState, agendaCtx) }]
       : []),
   ];
 
@@ -253,6 +258,10 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     result = await chatJson(agentActionSchema(agenda), messages);
   } catch (err) {
     console.error(`[agente] fallo del proveedor: ${err}`);
+    if (agendaCtx && agendaState) {
+      await runAgendaFailure(agendaState, agendaCtx, agendaDeps);
+      return;
+    }
     await applyHandoff(conversationId, organizationId, "error");
     return;
   }
@@ -260,47 +269,28 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     if (result.error === "not_configured") return;
     // Fallo persistente del proveedor o salida imposible → escalar (FR-022).
     console.error(`[agente] fallo del proveedor (raw): ${result.detail}`);
+    if (agendaCtx && agendaState) {
+      // 019: se re-pregunta el paso; solo el segundo fallo seguido escala.
+      await runAgendaFailure(agendaState, agendaCtx, agendaDeps);
+      return;
+    }
     await applyHandoff(conversationId, organizationId, "error");
     return;
   }
 
   let action: AgentActionType = result.data;
 
-  // 015 — Agenda. Un fallo del motor degrada el turno (el agente responde sin
-  // agendar), nunca lo tumba: quedarse callado es peor que no agendar.
-  if (action.action === "offer_slots" || action.action === "book_slot") {
-    if (!agenda) {
-      action = degradeAction(action);
-    } else {
-      try {
-        const turn =
-          action.action === "offer_slots"
-            ? await offerSlots({
-                organizationId,
-                conversationId,
-                intro: action.reply,
-                service: action.service,
-                staff: action.staff,
-              })
-            : await bookSlot({
-                organizationId,
-                conversationId,
-                startUtc: action.startUtc,
-                confirmation: action.reply,
-              });
-        await deliverReply(conversation, turn.text);
-        if (turn.ok) {
-          publish(organizationId, {
-            type: "conversation.updated",
-            data: { conversation: { id: conversationId } },
-          });
-        }
-        return;
-      } catch (err) {
-        console.error(`[agente] el motor de agenda falló: ${err}`);
-        action = degradeAction(action);
-      }
-    }
+  // 019 — Agenda. Un fallo del motor degrada el turno (responde sin agendar),
+  // nunca lo tumba: quedarse callado es peor que no agendar.
+  if (agendaCtx && agendaState) {
+    const outcome = await runAgendaAction(action, agendaState, agendaCtx, agendaDeps);
+    if (outcome.kind === "sent") return;
+  } else if (
+    action.action === "update_draft" ||
+    action.action === "book_slot" ||
+    action.action === "my_bookings"
+  ) {
+    action = degradeAction(action);
   }
 
   if (action.action === "move_stage") {
@@ -335,9 +325,15 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       if (action.farewell) {
         await deliverReply(conversation, action.farewell);
       }
-      await applyHandoff(conversationId, organizationId, "modelo");
+      await applyHandoff(
+        conversationId,
+        organizationId,
+        agenda ? toAgendaHandoffReason(action.reason) : "modelo"
+      );
       return;
     }
+    default:
+      return;
   }
 }
 
@@ -391,10 +387,34 @@ async function persistTestOutbound(
     .where(eq(schema.conversation.id, conversation.id));
 }
 
+/** Motivos que el modelo puede dar con la agenda encendida (019). */
+const AGENDA_HANDOFF_REASONS = [
+  "cancelacion",
+  "reprogramacion",
+  "llegada",
+  "cliente",
+] as const;
+
+/** Un motivo desconocido no cuesta el handoff: cae en `modelo`. */
+function toAgendaHandoffReason(
+  raw: string | undefined
+): (typeof AGENDA_HANDOFF_REASONS)[number] | "modelo" {
+  const reason = raw?.trim().toLowerCase();
+  return AGENDA_HANDOFF_REASONS.find((r) => r === reason) ?? "modelo";
+}
+
 export async function applyHandoff(
   conversationId: string,
   organizationId: string,
-  reason: "cliente" | "modelo" | "error" | "ventana"
+  reason:
+    | "cliente"
+    | "modelo"
+    | "error"
+    | "ventana"
+    | "cancelacion"
+    | "reprogramacion"
+    | "llegada"
+    | "atascado"
 ): Promise<void> {
   const db = getDb();
   const updated = await db

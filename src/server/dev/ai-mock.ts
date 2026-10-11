@@ -1,5 +1,4 @@
-import { JUDGE_MARKER } from "@/server/ai/prompts";
-import { CABECERA_HUECOS } from "@/server/agenda/offers";
+import { DRAFT_STATE_MARKER, JUDGE_MARKER } from "@/server/ai/prompts";
 
 /**
  * Proveedor LLM determinista para el self-test (contrato mocks.md).
@@ -47,48 +46,38 @@ export function aiMockCompletion(messages: InMessage[]): string {
   const text = lastUser.toLowerCase();
 
   /**
-   * 015 — La agenda, ejercitando el camino REAL.
+   * 019 — La agenda, ejercitando el camino REAL.
    *
-   * El mock reserva copiando el `startUtc` del mapa de huecos, igual que tiene
-   * que hacer un modelo de verdad. Si ese mapa deja de llegar, aquí no hay de
-   * dónde sacar el instante y la reserva falla — que es exactamente el fallo
-   * que se vivió en producción (#50), en vez de un test que lo simula.
-   *
-   * Se buscan TODOS los mensajes `system`, no solo el primero: el mapa va al
-   * final, después del historial.
+   * El mock lee el MISMO bloque de estado que ve un modelo de verdad (opciones
+   * numeradas al final de la conversación) y elige por número, igual que el
+   * contrato exige. Si ese bloque deja de llegar, aquí no hay opciones que
+   * elegir y la reserva falla en vez de simularse.
    */
-  const huecos = messages
-    .filter((m) => m.role === "system" && m.content.includes(CABECERA_HUECOS))
-    .flatMap((m) => m.content.match(/\d{4}-\d{2}-\d{2}T[\d:.]+Z/g) ?? []);
-
-  const systemAll = messages
-    .filter((m) => m.role === "system")
-    .map((m) => m.content)
-    .join("\n");
-  const quiereCita = /cita|agendar|agenda|horario|reserv/.test(text);
-  if (quiereCita && huecos.length === 0) {
-    const offer: {
-      action: "offer_slots";
-      reply: string;
-      service?: string;
-      staff?: string;
-    } = {
-      action: "offer_slots",
-      reply: "Claro, tengo estos horarios:",
-    };
-    const staff = staffForOffer(lastUser, systemAll);
+  const stateBlock = [...messages]
+    .reverse()
+    .find((m) => m.role === "system" && m.content.includes(DRAFT_STATE_MARKER))?.content;
+  if (stateBlock) {
+    const hasOptions = /^\s+1\) /m.test(stateBlock);
+    const eligeUno = /primero|segundo|tercero|ese|esa|confirmo|quiero|me sirve/.test(text);
+    if (hasOptions && eligeUno) {
+      const option = /tercer/.test(text) ? 3 : /segund/.test(text) ? 2 : 1;
+      return JSON.stringify({ action: "book_slot", option });
+    }
+    const systemAll = messages
+      .filter((m) => m.role === "system")
+      .map((m) => m.content)
+      .join("\n");
     const service = serviceForOffer(lastUser, systemAll);
-    if (staff) offer.staff = staff;
-    if (service) offer.service = service;
-    return JSON.stringify(offer);
-  }
-  const eligeUno = /primero|segundo|ese|esa|confirmo|quiero|me sirve/.test(text);
-  if (huecos.length > 0 && eligeUno && huecos[0]) {
-    return JSON.stringify({
-      action: "book_slot",
-      startUtc: huecos[0],
-      reply: "¡Listo! Te agendé.",
-    });
+    const staff = staffForOffer(lastUser, systemAll);
+    const quiereCita = /cita|agendar|agenda|horario|reserv/.test(text);
+    if (service || staff || quiereCita) {
+      const draft: { action: "update_draft"; service?: string; staff?: string } = {
+        action: "update_draft",
+      };
+      if (service) draft.service = service;
+      if (staff) draft.staff = staff;
+      return JSON.stringify(draft);
+    }
   }
 
   // Persona pide_humano (el regex de respaldo captura la frase canónica; esta

@@ -84,6 +84,8 @@ export async function createSessionBooking(input: {
    * con otro profesional antes de registrar alternativas.
    */
   refreshOnTaken?: boolean;
+  /** 019 — cita presencial: no se crea reunión en ningún conector. */
+  skipMeeting?: boolean;
 }): Promise<BookingResult> {
   const db = getDb();
   const settings = await getSettings(input.organizationId);
@@ -267,7 +269,9 @@ export async function createSessionBooking(input: {
   }
 
   // Efectos secundarios: ninguno puede revertir la cita.
-  const delivered = await deliverMeeting(booking, settings, contactName);
+  const delivered = input.skipMeeting
+    ? booking
+    : await deliverMeeting(booking, settings, contactName);
   await advanceLeadStage(
     input.organizationId,
     contactId,

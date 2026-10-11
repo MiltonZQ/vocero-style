@@ -21,6 +21,10 @@ const HANDOFF_LABELS: Record<string, string> = {
   error: "Error del proveedor de IA",
   ventana: "Ventana de 24h cerrada",
   manual_reply: "Respondiste desde el teléfono — IA en pausa",
+  cancelacion: "El cliente quiere cancelar su cita",
+  reprogramacion: "El cliente quiere cambiar su cita",
+  llegada: "El cliente avisa que llega tarde o sin cita",
+  atascado: "La conversación no avanzaba — la IA pasó el turno",
 };
 
 export function ContactPanel({

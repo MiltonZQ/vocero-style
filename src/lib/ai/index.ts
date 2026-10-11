@@ -21,7 +21,7 @@ const MAX_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 500;
 
 export async function chatJson<T>(
-  schema: z.ZodType<T>,
+  schema: z.ZodType<T, z.ZodTypeDef, unknown>,
   messages: ChatMessage[],
   opts?: { model?: string; judge?: boolean; timeoutMs?: number }
 ): Promise<ChatJsonResult<T>> {
