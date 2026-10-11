@@ -43,6 +43,7 @@ import { getSettings, type CalendarSettings } from "@/server/agenda/settings";
 import type { AgentActionType } from "@/server/ai/actions";
 import { guardAction, type BotAction, type Directive } from "@/server/ai/guards";
 import { buildDraftStateBlock } from "@/server/ai/prompts";
+import type { BotEvent, SlotsFallback } from "@/server/events/bot-events";
 
 /**
  * 019 — El turno del bot de barbería, del lado del CÓDIGO.
@@ -99,7 +100,18 @@ export type AgendaContext = {
   catalog: AgendaCatalog;
   settings: CalendarSettings;
   now: Date;
+  /** 020 — registra un evento del turno (best-effort; ausente en pruebas viejas). */
+  record?: (event: BotEvent) => void;
 };
+
+/** Registrar jamás cambia el turno: cualquier fallo se traga. */
+function emit(ctx: AgendaContext, event: BotEvent): void {
+  try {
+    ctx.record?.(event);
+  } catch {
+    // best-effort
+  }
+}
 
 export type AgendaOutcome =
   | { kind: "sent" }
@@ -271,7 +283,45 @@ async function offerMessage(
     notice,
     now,
   });
+  recordOffer(ctx, service.id, choice, state.draft?.when ?? null, turn);
   return opts.prefix ? `${opts.prefix} ${turn.text}` : turn.text;
+}
+
+/** 020 — qué se ofreció (o por qué no hubo nada) para el embudo y la demanda no atendida. */
+function recordOffer(
+  ctx: AgendaContext,
+  serviceId: string,
+  staffChoice: string,
+  when: DraftWhen | null,
+  turn: Awaited<ReturnType<typeof offerByPreference>>
+): void {
+  const outcome = turn.outcome;
+  if (!outcome) return;
+  const window = {
+    ...(when?.day ? { day: when.day } : {}),
+    ...(when?.from ? { from: when.from } : {}),
+    ...(when?.to ? { to: when.to } : {}),
+  };
+  const noWindowMatch =
+    outcome.kind === "none" ||
+    outcome.kind === "fallback_other_staff" ||
+    (outcome.kind === "fallback_nearest" && outcome.fallbackReason === "empty");
+  if (noWindowMatch) {
+    emit(ctx, { type: "no_availability", payload: { serviceId, staffChoice, ...window } });
+  }
+  if (outcome.kind === "none" || !turn.ok) return;
+  const fallback: SlotsFallback =
+    outcome.kind === "match"
+      ? "none"
+      : outcome.kind === "fallback_other_staff"
+        ? "other_staff"
+        : outcome.today
+          ? "today_empty"
+          : "nearest";
+  emit(ctx, {
+    type: "slots_offered",
+    payload: { serviceId, staffChoice, ...window, count: turn.offered, fallback },
+  });
 }
 
 /** Vuelve a preguntar el paso en el que está la conversación. */
@@ -320,6 +370,7 @@ async function handleUpdateDraft(
   let when = state.draft?.when ?? null;
   const notes: string[] = [];
   let blocking: string | null = null;
+  let autoStaff = false;
 
   const askedService = action.service?.trim();
   if (askedService) {
@@ -347,8 +398,10 @@ async function handleUpdateDraft(
         ctx.catalog.services.filter((s) => s.staff.length === 0).map((s) => ({ id: s.id, name: s.name }))
       );
       if (unassigned.kind === "one") {
+        emit(ctx, { type: "service_unavailable", payload: { serviceId: unassigned.item.id } });
         blocking = `Por ahora ${unassigned.item.name} no se puede agendar por WhatsApp. ${buildCatalogMessage(services)}`;
       } else {
+        emit(ctx, { type: "service_not_found", payload: { text: askedService } });
         const hint = match.closest ? `¿Quisiste decir ${match.closest.name}? ` : "";
         blocking = `Por ahora no ofrecemos «${askedService}». ${hint}${buildCatalogMessage(services)}`;
       }
@@ -385,6 +438,7 @@ async function handleUpdateDraft(
     const only = service.staff[0];
     if (only) {
       staffChoice = only.id;
+      autoStaff = true;
       // En un negocio de un solo profesional no hay nadie más a quien nombrar.
       if (!ctx.catalog.singleStaff) notes.push(`Para ${service.name} te atenderá ${only.displayName}.`);
     }
@@ -405,6 +459,12 @@ async function handleUpdateDraft(
     await upsertDraft(organizationId, conversationId, { serviceId, staffChoice, when });
     // Lo ofrecido respondía al borrador anterior.
     await clearOffers(organizationId, conversationId);
+    if (serviceId && serviceId !== (state.draft?.serviceId ?? null)) {
+      emit(ctx, { type: "service_selected", payload: { serviceId } });
+    }
+    if (staffChoice && staffChoice !== (state.draft?.staffChoice ?? null)) {
+      emit(ctx, { type: "staff_selected", payload: { staffId: staffChoice, auto: autoStaff } });
+    }
   }
   if (blocking) return [...notes, blocking].join(" ");
 
@@ -477,6 +537,16 @@ async function handleBookSlot(
       skipMeeting: true,
       now: ctx.now,
     });
+    emit(ctx, {
+      type: "booked",
+      payload: {
+        bookingId: booked.booking.id,
+        serviceId: booked.booking.serviceId ?? picked.serviceId ?? "",
+        staffId: booked.booking.staffId ?? picked.staffId ?? "",
+        priceCents: booked.booking.priceCents ?? 0,
+        currency: booked.booking.currency ?? "MXN",
+      },
+    });
     const location = await getShopLocation(conversation.organizationId);
     const serviceName =
       catalog.services.find((s) => s.id === booked.booking.serviceId)?.name ?? "Cita";
@@ -541,6 +611,7 @@ async function handleBookSlot(
 /** Saludo: bienvenida si aún no hay servicio; si ya hay flujo, retoma el paso. */
 async function handleGreeting(state: AgendaState, ctx: AgendaContext): Promise<string> {
   if (state.step === "need_service") {
+    emit(ctx, { type: "greeted", payload: {} });
     return buildGreetingMessage({
       businessName: ctx.businessName,
       services: bookable(ctx.catalog),
@@ -551,11 +622,13 @@ async function handleGreeting(state: AgendaState, ctx: AgendaContext): Promise<s
 
 /** El catálogo ACTIVO completo, también lo que aún no tiene profesional asignado. */
 function handleListServices(ctx: AgendaContext): string {
+  emit(ctx, { type: "services_listed", payload: {} });
   return buildServiceListMessage(ctx.catalog.services);
 }
 
 async function handleMyBookings(ctx: AgendaContext): Promise<string> {
   const { conversation, settings, now } = ctx;
+  emit(ctx, { type: "my_bookings", payload: {} });
   const [bookings, location] = await Promise.all([
     listUpcomingBookings(conversation.organizationId, conversation.contactId, {
       isTest: conversation.isTest,
@@ -599,6 +672,7 @@ async function handleSendLocation(
     return { text: "¡Claro! En un momento te comparto la ubicación." };
   }
 
+  emit(ctx, { type: "location_sent", payload: { pin: hasPin } });
   const midBooking = state.step !== "need_service";
   const followUp = midBooking
     ? await askCurrentStep(state, ctx)

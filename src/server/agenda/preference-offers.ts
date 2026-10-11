@@ -297,6 +297,14 @@ export type PreferenceTurn = {
   ok: boolean;
   /** How many options were stored as bookable. */
   offered: number;
+  /** 020 — what the plan was, for the bot event log (never shown to the client). */
+  outcome?: {
+    kind: PreferencePlan["kind"];
+    /** Why the window was not honoured, when it was not. */
+    fallbackReason?: FallbackReason;
+    /** The requested window was literally "hoy". */
+    today?: boolean;
+  };
 };
 
 async function freeSlots(
@@ -363,7 +371,12 @@ export async function offerByPreference(input: {
     staffName: chosen?.displayName ?? null,
     notice: input.notice,
   });
-  if (plan.slots.length === 0) return { ok: false, offered: 0, text };
+  const outcome: NonNullable<PreferenceTurn["outcome"]> = {
+    kind: plan.kind,
+    ...(plan.fallback ? { fallbackReason: plan.fallback.reason } : {}),
+    ...(plan.fallback?.label === "hoy" ? { today: true } : {}),
+  };
+  if (plan.slots.length === 0) return { ok: false, offered: 0, text, outcome };
 
   const specificPerSlot = plan.kind === "fallback_other_staff";
   await replaceOffers(
@@ -379,5 +392,5 @@ export async function offerByPreference(input: {
       staffName: any ? null : (slot.staffName ?? chosen?.displayName ?? null),
     }))
   );
-  return { ok: true, offered: plan.slots.length, text };
+  return { ok: true, offered: plan.slots.length, text, outcome };
 }

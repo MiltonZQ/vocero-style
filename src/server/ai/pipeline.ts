@@ -6,6 +6,11 @@ import { moveLeadToStage as moveLeadThroughHistory } from "@/server/leads/stage-
 import { getEnv, isAiConfigured } from "@/lib/env";
 import { chatJson, type ChatMessage } from "@/lib/ai";
 import { publish } from "@/server/events/bus";
+import {
+  botEventContext,
+  createTurnRecorder,
+  type TurnRecorder,
+} from "@/server/events/bot-events";
 import { isWindowOpen } from "@/server/inbox/window";
 import { SendError, sendStructured, sendText } from "@/server/inbox/send";
 import {
@@ -108,6 +113,22 @@ async function executeTurn(conversationId: string): Promise<void> {
 export async function runAgentTurn(conversationId: string): Promise<void> {
   if (!isAiConfigured()) return;
 
+  // 020 — Bitácora del turno. Los eventos se acumulan y se escriben UNA vez al
+  // terminar (después de enviar la respuesta): el cliente nunca espera por la
+  // bitácora, el orden queda fijo y los tests son deterministas porque
+  // `runAgentTurn` no resuelve hasta que se escribió. Un fallo al escribir
+  // solo avisa (`recordBotEvent`), jamás cambia el turno.
+  const rec = createTurnRecorder();
+  const startedAt = Date.now();
+  try {
+    await runTurn(conversationId, rec);
+  } finally {
+    await rec.flush(Date.now() - startedAt);
+  }
+}
+
+async function runTurn(conversationId: string, rec: TurnRecorder): Promise<void> {
+
   const db = getDb();
   const convRows = await db
     .select()
@@ -117,6 +138,11 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
   const conversation = convRows[0];
   if (!conversation) return;
   const organizationId = conversation.organizationId;
+  rec.bind(botEventContext(conversation));
+  const handoff = async (reason: Parameters<typeof applyHandoff>[2]): Promise<void> => {
+    rec.add({ type: "handoff", payload: { reason } });
+    await applyHandoff(conversationId, organizationId, reason);
+  };
 
   // Condiciones de silencio: handoff activo o IA apagada en la conversación.
   if (conversation.handoffAt || !conversation.aiEnabled) return;
@@ -144,7 +170,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
 
   // Ventana cerrada: el agente JAMÁS envía texto libre → handoff 'ventana'.
   if (!conversation.isTest && !isWindowOpen(conversation.lastInboundAt)) {
-    await applyHandoff(conversationId, organizationId, "ventana");
+    await handoff("ventana");
     return;
   }
 
@@ -192,7 +218,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
 
   // Patrón de respaldo ANTES del LLM (FR-022).
   if (lastInbound.text && matchesHandoffIntent(lastInbound.text)) {
-    await applyHandoff(conversationId, organizationId, "cliente");
+    await handoff("cliente");
     return;
   }
 
@@ -220,12 +246,13 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
   let agendaState: AgendaState | undefined;
   if (agenda && catalog) {
     agendaCtx = await loadAgendaContext(conversation, catalog);
+    agendaCtx.record = (event) => rec.add(event);
     agendaState = await loadAgendaState(agendaCtx);
   }
   const agendaDeps: AgendaDeps = {
     deliver: (text) => deliverReply(conversation, text),
     deliverLocation: (pin) => deliverLocationPin(conversation, pin),
-    handoff: (reason) => applyHandoff(conversationId, organizationId, reason),
+    handoff,
     notifyBooked: () =>
       publish(organizationId, {
         type: "conversation.updated",
@@ -269,30 +296,43 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       : []),
   ];
 
+  // Sin agenda no hay contador de fallos seguidos: cada fallo escala al instante.
+  const consecutiveFailures = (agendaState?.draft?.failedTurns ?? 0) + 1;
   let result;
   try {
     result = await chatJson(agentActionSchema(agenda), messages);
   } catch (err) {
     console.error(`[agente] fallo del proveedor: ${err}`);
+    rec.add({ type: "llm_failed", payload: { consecutive: consecutiveFailures } });
     if (agendaCtx && agendaState) {
       await runAgendaFailure(agendaState, agendaCtx, agendaDeps);
       return;
     }
-    await applyHandoff(conversationId, organizationId, "error");
+    await handoff("error");
     return;
   }
   if (!result.ok) {
     if (result.error === "not_configured") return;
     // Fallo persistente del proveedor o salida imposible → escalar (FR-022).
     console.error(`[agente] fallo del proveedor (raw): ${result.detail}`);
+    rec.add({ type: "llm_failed", payload: { consecutive: consecutiveFailures } });
     if (agendaCtx && agendaState) {
       // 019: se re-pregunta el paso; solo el segundo fallo seguido escala.
       await runAgendaFailure(agendaState, agendaCtx, agendaDeps);
       return;
     }
-    await applyHandoff(conversationId, organizationId, "error");
+    await handoff("error");
     return;
   }
+  rec.complete({
+    action: result.data.action,
+    model: result.model ?? "unknown",
+    ...(result.usage?.costUsd !== undefined ? { costUsd: result.usage.costUsd } : {}),
+    ...(result.usage?.promptTokens !== undefined ? { promptTokens: result.usage.promptTokens } : {}),
+    ...(result.usage?.completionTokens !== undefined
+      ? { completionTokens: result.usage.completionTokens }
+      : {}),
+  });
 
   let action: AgentActionType = result.data;
 
@@ -343,11 +383,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       if (action.farewell) {
         await deliverReply(conversation, action.farewell);
       }
-      await applyHandoff(
-        conversationId,
-        organizationId,
-        agenda ? toAgendaHandoffReason(action.reason) : "modelo"
-      );
+      await handoff(agenda ? toAgendaHandoffReason(action.reason) : "modelo");
       return;
     }
     default:
