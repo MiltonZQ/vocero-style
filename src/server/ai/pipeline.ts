@@ -31,6 +31,7 @@ import {
 } from "@/server/ai/agenda-turn";
 import { readMediaFile } from "@/server/whatsapp/media";
 import { transcribeAudio } from "@/server/ai/transcribe";
+import { showTyping } from "@/server/whatsapp/typing";
 
 /**
  * Turno del agente (FR-021..FR-025).
@@ -141,6 +142,18 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
   const lastInbound = [...history].reverse().find((m) => m.direction === "in");
   if (!lastInbound) return;
 
+  // Ventana cerrada: el agente JAMÁS envía texto libre → handoff 'ventana'.
+  if (!conversation.isTest && !isWindowOpen(conversation.lastInboundAt)) {
+    await applyHandoff(conversationId, organizationId, "ventana");
+    return;
+  }
+
+  // 019 — "leído" + "escribiendo…" mientras el agente trabaja (también cubre la
+  // transcripción). Solo conversaciones reales; el Laboratorio jamás toca Meta.
+  if (!conversation.isTest && lastInbound.waMessageId) {
+    await typingBestEffort(organizationId, lastInbound.waMessageId);
+  }
+
   if (
     lastInbound.type === "audio" &&
     !lastInbound.text &&
@@ -170,9 +183,10 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     }
   }
 
-  // Ventana cerrada: el agente JAMÁS envía texto libre → handoff 'ventana'.
-  if (!conversation.isTest && !isWindowOpen(conversation.lastInboundAt)) {
-    await applyHandoff(conversationId, organizationId, "ventana");
+  // 019 — Una nota de voz que no se pudo transcribir no llega al modelo (no
+  // habría nada que leer): se le pide al cliente que escriba. Sin escalar.
+  if (lastInbound.type === "audio" && !lastInbound.text) {
+    await deliverReply(conversation, VOICE_FALLBACK_TEXT);
     return;
   }
 
@@ -340,6 +354,33 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
 }
 
 type Conversation = typeof schema.conversation.$inferSelect;
+
+const VOICE_FALLBACK_TEXT =
+  "No pude escuchar bien tu nota de voz. ¿Podrías escribirme lo que necesitas?";
+
+/** Tope para el indicador: un Meta lento no puede retener el turno del agente. */
+const TYPING_TIMEOUT_MS = 3000;
+
+/** "Escribiendo…" best-effort: se registra el fallo y el turno sigue. */
+async function typingBestEffort(
+  organizationId: string,
+  waMessageId: string
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const result = await Promise.race([
+      showTyping(organizationId, waMessageId),
+      new Promise<{ ok: false; reason: "timeout" }>((resolve) => {
+        timer = setTimeout(() => resolve({ ok: false, reason: "timeout" }), TYPING_TIMEOUT_MS);
+      }),
+    ]);
+    if (!result.ok) {
+      console.warn(`[agente] no se pudo mostrar "escribiendo…": ${result.reason}`);
+    }
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 /** Entrega la respuesta: envío real o persistencia sandbox (is_test). */
 async function deliverReply(

@@ -3,8 +3,7 @@ import { z } from "zod";
 import { getDb, schema } from "@/lib/db";
 import { apiError, parseBody } from "@/lib/api";
 import { requireBotKey, resolveInstanceOrg } from "@/server/bot/auth";
-import { getCredentialsByOrg } from "@/server/whatsapp/credentials";
-import { graphRequest } from "@/lib/meta/client";
+import { showTyping } from "@/server/whatsapp/typing";
 
 export const dynamic = "force-dynamic";
 
@@ -68,24 +67,10 @@ export async function POST(req: Request) {
   const wamid = msgs[0]?.waMessageId;
   if (!wamid) return Response.json({ ok: false, reason: "no_inbound" });
 
-  const creds = await getCredentialsByOrg(organizationId);
-  if (!creds) {
+  const result = await showTyping(organizationId, wamid);
+  if (result.ok) return Response.json({ ok: true });
+  if (result.reason === "no_connection") {
     return apiError(409, "no_connection", "WhatsApp no está conectado");
   }
-
-  try {
-    await graphRequest(`${creds.phoneNumberId}/messages`, {
-      method: "POST",
-      token: creds.token,
-      body: {
-        messaging_product: "whatsapp",
-        status: "read",
-        message_id: wamid,
-        typing_indicator: { type: "text" },
-      },
-    });
-    return Response.json({ ok: true });
-  } catch {
-    return Response.json({ ok: false, reason: "meta_error" });
-  }
+  return Response.json({ ok: false, reason: result.reason });
 }
