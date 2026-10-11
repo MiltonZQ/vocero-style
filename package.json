@@ -16,6 +16,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "eval:bot": "node --env-file=.env scripts/eval-bot-model.mjs",
     "test:e2e": "node --env-file=.env scripts/e2e-selftest.mjs",
     "test:e2e:local": "node --env-file=.env.e2e scripts/e2e-selftest.mjs",
     "test:e2e:agenda-ui": "node scripts/e2e-agenda-multi-ui.mjs",

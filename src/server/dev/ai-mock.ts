@@ -57,27 +57,8 @@ export function aiMockCompletion(messages: InMessage[]): string {
     .reverse()
     .find((m) => m.role === "system" && m.content.includes(DRAFT_STATE_MARKER))?.content;
   if (stateBlock) {
-    const hasOptions = /^\s+1\) /m.test(stateBlock);
-    const eligeUno = /primero|segundo|tercero|ese|esa|confirmo|quiero|me sirve/.test(text);
-    if (hasOptions && eligeUno) {
-      const option = /tercer/.test(text) ? 3 : /segund/.test(text) ? 2 : 1;
-      return JSON.stringify({ action: "book_slot", option });
-    }
-    const systemAll = messages
-      .filter((m) => m.role === "system")
-      .map((m) => m.content)
-      .join("\n");
-    const service = serviceForOffer(lastUser, systemAll);
-    const staff = staffForOffer(lastUser, systemAll);
-    const quiereCita = /cita|agendar|agenda|horario|reserv/.test(text);
-    if (service || staff || quiereCita) {
-      const draft: { action: "update_draft"; service?: string; staff?: string } = {
-        action: "update_draft",
-      };
-      if (service) draft.service = service;
-      if (staff) draft.staff = staff;
-      return JSON.stringify(draft);
-    }
+    const turn = barberTurn(text, stateBlock, messages);
+    if (turn) return JSON.stringify(turn);
   }
 
   // Persona pide_humano (el regex de respaldo captura la frase canónica; esta
@@ -116,17 +97,122 @@ function listedStaff(systemText: string): string[] {
   );
 }
 
-/** Nombres solo si el texto del cliente los pide. Nunca inventa un startUtc. */
-function staffForOffer(userText: string, systemText: string): string | undefined {
-  const lower = userText.toLowerCase();
-  if (lower.includes("el que esté libre") || lower.includes("el que este libre")) return "any";
-  if (lower.includes("no ofrece") || lower.includes("con alguien que no")) {
-    return "Nadie De Mentira";
-  }
-  return listedStaff(systemText).find((name) => lower.includes(name.toLowerCase()));
+type MockTurn =
+  | { action: "book_slot"; option: number }
+  | { action: "my_bookings" }
+  | { action: "handoff"; reason: string }
+  | { action: "reply"; text: string }
+  | {
+      action: "update_draft";
+      service?: string;
+      staff?: string;
+      when?: { day?: string; from?: string; to?: string };
+    };
+
+const WEEKDAYS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"];
+
+function fold(value: string): string {
+  return value.toLowerCase().normalize("NFD").replace(/\p{M}/gu, "");
 }
 
-function serviceForOffer(userText: string, systemText: string): string | undefined {
-  const lower = userText.toLowerCase();
-  return listedServices(systemText).find((name) => lower.includes(name.toLowerCase()));
+/** Relative day only (the contract: the model never computes dates). */
+function dayFrom(lower: string): string | undefined {
+  // "en la mañana" is a time of day, not tomorrow.
+  const cleaned = lower.replace(/(?:en|por) la man?ana/g, " ");
+  if (/pasado man?ana/.test(cleaned)) return "pasado mañana";
+  if (/\bman?ana\b/.test(cleaned)) return "mañana";
+  if (/\bhoy\b/.test(cleaned)) return "hoy";
+  return WEEKDAYS.find((d) => cleaned.includes(fold(d)));
+}
+
+function hoursFrom(lower: string): { from?: string; to?: string } {
+  if (/en la tarde|por la tarde/.test(lower)) return { from: "14:00", to: "19:00" };
+  if (/en la noche|por la noche/.test(lower)) return { from: "18:00", to: "20:00" };
+  if (/(?:en|por) la man?ana/.test(lower)) return { from: "10:00", to: "13:00" };
+  const clock = /a las (\d{1,2})(?::(\d{2}))?/.exec(lower);
+  if (clock) {
+    let hour = Number(clock[1]);
+    if (hour <= 7) hour += 12; // the shop opens at 10:00
+    return { from: `${String(hour).padStart(2, "0")}:${clock[2] ?? "00"}` };
+  }
+  return {};
+}
+
+/**
+ * 019 — Keyword mapping from the client's last message to the barber bot
+ * contract. Deterministic and tied to the REAL prompt: service/staff names come
+ * from the catalog the system prompt lists, options from the numbered state.
+ */
+function barberTurn(
+  lower: string,
+  stateBlock: string,
+  messages: InMessage[]
+): MockTurn | null {
+  const folded = fold(lower);
+
+  if (/cancel/.test(folded)) return { action: "handoff", reason: "cancelacion" };
+  if (/reprogram|cambiar (?:mi|la) cita|mover (?:mi|la) cita|otro dia para mi cita/.test(folded)) {
+    return { action: "handoff", reason: "reprogramacion" };
+  }
+  if (/llego tarde|llegar\w* tarde|voy\w* tarde|\d+ ?min\w* tarde|sin cita/.test(folded)) {
+    return { action: "handoff", reason: "llegada" };
+  }
+  if (/mi cita|mis citas|a que hora (?:es|era)|cuando es mi/.test(folded)) {
+    return { action: "my_bookings" };
+  }
+
+  const hasOptions = /^\s+1\) /m.test(stateBlock);
+  if (hasOptions && /primer|segund|tercer|\bla [123]\b|opcion [123]|confirmo|me sirve|\bese\b|\besa\b/.test(folded)) {
+    const option = /tercer|[3]/.test(folded) ? 3 : /segund|[2]/.test(folded) ? 2 : 1;
+    return { action: "book_slot", option };
+  }
+
+  if (/donde|direccion|ubicad|ubicacion|como llego/.test(folded)) {
+    return {
+      action: "reply",
+      text: "Con gusto: te comparto la dirección del local; si necesitas algo más, el equipo te lo confirma.",
+    };
+  }
+
+  const systemAll = messages
+    .filter((m) => m.role === "system")
+    .map((m) => m.content)
+    .join("\n");
+  const catalogNames = listedServices(systemAll);
+  // Longest name first: "Corte + barba" must win over "Barba".
+  const listed = [...catalogNames]
+    .sort((a, b) => b.length - a.length)
+    .find((name) => folded.includes(fold(name)));
+  const service =
+    // A combo the catalog lacks: the model puts the client's words in `service`.
+    (/corte y barba/.test(folded) && !catalogNames.some((n) => /corte.{1,3}barba/.test(fold(n)))
+      ? "corte y barba"
+      : undefined) ??
+    listed ??
+    // Not in the catalog: the model puts the client's literal text in `service`.
+    /tinte|manicure|masaje|facial|pedicure/.exec(folded)?.[0];
+  const anyone = /me da igual|cualquiera|el que este libre|quien sea/.test(folded);
+  const staff = anyone
+    ? "any"
+    : /no ofrece|con alguien que no/.test(folded)
+      ? "Nadie De Mentira"
+      : listedStaff(systemAll).find((name) => folded.includes(fold(name)));
+  const day = dayFrom(folded);
+  const hours = hoursFrom(folded);
+
+  if (service || staff || day || hours.from) {
+    const draft: Extract<MockTurn, { action: "update_draft" }> = { action: "update_draft" };
+    if (service) draft.service = service;
+    if (staff) draft.staff = staff;
+    if (day || hours.from) draft.when = { ...(day ? { day } : {}), ...hours };
+    return draft;
+  }
+  if (/cita|agendar|agenda|horario|reserv/.test(folded)) return { action: "update_draft" };
+  if (/^(?:hola|buenas|buenos|q onda|que onda|hey)/.test(folded.trim())) {
+    return {
+      action: "reply",
+      text: "¡Hola! Bienvenido a la barbería. ¿Qué servicio te gustaría agendar?",
+    };
+  }
+  return null;
 }
