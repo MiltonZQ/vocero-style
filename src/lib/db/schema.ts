@@ -712,10 +712,22 @@ export const calendarSettings = pgTable(
     connector: text("connector").notNull().default("enlace-fijo"),
     /** Sala fija del conector `enlace-fijo`; null ⇒ citas sin link. */
     meetingLink: text("meeting_link"),
+    /** 019 — dirección física del negocio (citas presenciales). */
+    locationAddress: text("location_address"),
+    /** 019 — enlace de Google Maps del negocio. */
+    locationMapsUrl: text("location_maps_url"),
+    /** 019 — minutos de anticipación que se le piden al cliente al llegar. */
+    arrivalLeadMinutes: integer("arrival_lead_minutes").notNull().default(5),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
-  (t) => [uniqueIndex("calendar_settings_org_uq").on(t.organizationId)]
+  (t) => [
+    uniqueIndex("calendar_settings_org_uq").on(t.organizationId),
+    check(
+      "calendar_settings_arrival_lead_ck",
+      sql`${t.arrivalLeadMinutes} between 0 and 120`
+    ),
+  ]
 );
 
 /** `bytea` no tiene tipo nativo en Drizzle 0.38. */
@@ -1009,6 +1021,37 @@ export const offeredSlot = pgTable(
     offeredAt: timestamp("offered_at").notNull().defaultNow(),
   },
   (t) => [index("offered_slot_conv_idx").on(t.conversationId, t.startUtc)]
+);
+
+/**
+ * 019 — Borrador de reserva del bot: lo que el cliente ya decidió (servicio,
+ * profesional, preferencia de horario). Una fila por conversación; el paso
+ * (`need_service` ... ) se DERIVA de ella, no se guarda. Caduca a las 24 h.
+ */
+export const bookingDraft = pgTable(
+  "booking_draft",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversation.id, { onDelete: "cascade" }),
+    serviceId: text("service_id").references(() => service.id, {
+      onDelete: "set null",
+    }),
+    /** Id de profesional o el literal `any`. */
+    staffChoice: text("staff_choice"),
+    /** `{day?, from?, to?}` tal como lo emitió el modelo (día relativo). */
+    when: jsonb("when").$type<{ day?: string; from?: string; to?: string }>(),
+    stuckTurns: integer("stuck_turns").notNull().default(0),
+    failedTurns: integer("failed_turns").notNull().default(0),
+    lastStep: text("last_step"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("booking_draft_conversation_uq").on(t.conversationId)]
 );
 
 /**

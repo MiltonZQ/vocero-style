@@ -32,6 +32,8 @@ const prefixes = {
   // 018 — agenda multi-profesional (staff_service y staff_photo: clave natural)
   staff: "st",
   service: "sv",
+  // 019 — bot de barbería
+  bookingDraft: "bd",
 } as const;
 
 export type IdKind = keyof typeof prefixes;
