@@ -11,12 +11,19 @@ export type ShopLocation = {
   locationAddress: string | null;
   locationMapsUrl: string | null;
   arrivalLeadMinutes: number;
+  /** Coordenadas del pin de WhatsApp; ambas o ninguna. */
+  latitude: number | null;
+  longitude: number | null;
 };
+
+export { parseMapsCoordinates } from "@/lib/maps-coordinates";
 
 export const DEFAULT_LOCATION: ShopLocation = {
   locationAddress: null,
   locationMapsUrl: null,
   arrivalLeadMinutes: 5,
+  latitude: null,
+  longitude: null,
 };
 
 export async function getShopLocation(
@@ -28,6 +35,8 @@ export async function getShopLocation(
       locationAddress: schema.calendarSettings.locationAddress,
       locationMapsUrl: schema.calendarSettings.locationMapsUrl,
       arrivalLeadMinutes: schema.calendarSettings.arrivalLeadMinutes,
+      latitude: schema.calendarSettings.latitude,
+      longitude: schema.calendarSettings.longitude,
     })
     .from(schema.calendarSettings)
     .where(scoped(schema.calendarSettings.organizationId, organizationId))

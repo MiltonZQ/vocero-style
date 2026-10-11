@@ -7,7 +7,7 @@ import { getEnv, isAiConfigured } from "@/lib/env";
 import { chatJson, type ChatMessage } from "@/lib/ai";
 import { publish } from "@/server/events/bus";
 import { isWindowOpen } from "@/server/inbox/window";
-import { SendError, sendText } from "@/server/inbox/send";
+import { SendError, sendStructured, sendText } from "@/server/inbox/send";
 import {
   agentActionSchema,
   degradeAction,
@@ -27,6 +27,7 @@ import {
   type AgendaContext,
   type AgendaDeps,
   type AgendaState,
+  type LocationPin,
 } from "@/server/ai/agenda-turn";
 import { readMediaFile } from "@/server/whatsapp/media";
 import { transcribeAudio } from "@/server/ai/transcribe";
@@ -209,6 +210,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
   }
   const agendaDeps: AgendaDeps = {
     deliver: (text) => deliverReply(conversation, text),
+    deliverLocation: (pin) => deliverLocationPin(conversation, pin),
     handoff: (reason) => applyHandoff(conversationId, organizationId, reason),
     notifyBooked: () =>
       publish(organizationId, {
@@ -362,6 +364,60 @@ async function deliverReply(
     }
     throw err;
   }
+}
+
+/**
+ * 019 — El pin del local. Misma regla que el texto: una conversación de prueba
+ * se persiste y JAMÁS toca la API; una real pasa por el pre-flight común del
+ * sender (ventana de 24 h, credenciales, destinatario).
+ */
+async function deliverLocationPin(
+  conversation: Conversation,
+  pin: LocationPin
+): Promise<void> {
+  if (conversation.isTest) {
+    await persistTestLocation(conversation, pin);
+    return;
+  }
+  await sendStructured({
+    conversationId: conversation.id,
+    organizationId: conversation.organizationId,
+    kind: "location",
+    location: pin,
+    aiGenerated: true,
+  });
+}
+
+/** Pin saliente del sandbox: se guarda como cualquier ubicación, sin red. */
+async function persistTestLocation(
+  conversation: Conversation,
+  pin: LocationPin
+): Promise<void> {
+  const db = getDb();
+  const assetId = newId("mediaAsset");
+  await db.insert(schema.mediaAsset).values({
+    id: assetId,
+    organizationId: conversation.organizationId,
+    kind: "location",
+    payload: pin,
+    fetchStatus: "available",
+  });
+  await db.insert(schema.message).values({
+    id: newId("message"),
+    organizationId: conversation.organizationId,
+    conversationId: conversation.id,
+    direction: "out",
+    type: "location",
+    text: null,
+    status: "sent",
+    aiGenerated: true,
+    origin: "ai",
+    mediaAssetId: assetId,
+  });
+  await db
+    .update(schema.conversation)
+    .set({ lastMessageAt: new Date(), updatedAt: new Date() })
+    .where(eq(schema.conversation.id, conversation.id));
 }
 
 /** Mensaje saliente del sandbox: se persiste, JAMÁS toca la API (FR-031). */

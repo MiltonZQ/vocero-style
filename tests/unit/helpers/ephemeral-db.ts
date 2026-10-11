@@ -47,6 +47,14 @@ export async function openEphemeralDb(): Promise<EphemeralDb> {
   }
   const schema = `t_${Math.random().toString(36).slice(2, 10)}`;
   const admin = postgres(TEST_DATABASE_URL, { max: 1, onnotice: () => {} });
+  // btree_gist (0014) se instala UNA vez en `public`. Si la creara la migración,
+  // caería en el primer esquema del search_path —el de esta corrida— y el
+  // `DROP SCHEMA ... CASCADE` de un archivo se la quitaría a los demás (y dos
+  // creaciones simultáneas chocaban con `pg_extension_name_index`).
+  await admin.begin(async (tx) => {
+    await tx.unsafe("SELECT pg_advisory_xact_lock(190001)");
+    await tx.unsafe("CREATE EXTENSION IF NOT EXISTS btree_gist WITH SCHEMA public");
+  });
   await admin.unsafe(`CREATE SCHEMA "${schema}"`);
   await admin.end();
 

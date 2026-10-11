@@ -18,6 +18,7 @@ import {
   type ConnectorId,
 } from "@/lib/agenda-connectors";
 import { ConnectorCredentials } from "@/components/settings/connector-credentials";
+import { LocationPinFields } from "@/components/settings/location-pin-fields";
 
 /**
  * 015 — Ajustes → Agenda: cuándo atiende el negocio y cómo se entrega la
@@ -40,6 +41,8 @@ type Settings = {
   locationAddress: string | null;
   locationMapsUrl: string | null;
   arrivalLeadMinutes: number;
+  latitude: number | null;
+  longitude: number | null;
 };
 
 const DAYS: { key: DayKey; label: string }[] = [
@@ -154,6 +157,8 @@ export function AgendaClient() {
           ? settings.locationMapsUrl.trim()
           : null,
         arrivalLeadMinutes: settings.arrivalLeadMinutes,
+        latitude: settings.latitude,
+        longitude: settings.longitude,
       }),
     }).catch(() => null);
     setSaving(false);
@@ -312,8 +317,9 @@ export function AgendaClient() {
         <CardHeader>
           <CardTitle>Ubicación del local</CardTitle>
           <CardDescription>
-            Para citas en persona. El agente comparte estos datos al confirmar
-            la cita y cuando un cliente pregunta dónde están.
+            Para citas en persona. El agente comparte estos datos —y el pin de
+            ubicación— al confirmar la cita y cuando un cliente pregunta dónde
+            están.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -344,6 +350,11 @@ export function AgendaClient() {
               enlace.
             </p>
           </div>
+          <LocationPinFields
+            latitude={settings.latitude}
+            longitude={settings.longitude}
+            onChange={(latitude, longitude) => patch({ latitude, longitude })}
+          />
           <div className="space-y-1.5">
             <Label htmlFor="arrival">Minutos de anticipación recomendados</Label>
             <Input

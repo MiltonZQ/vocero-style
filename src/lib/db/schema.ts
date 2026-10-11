@@ -2,6 +2,7 @@ import {
   boolean,
   check,
   customType,
+  doublePrecision,
   index,
   integer,
   jsonb,
@@ -723,6 +724,9 @@ export const calendarSettings = pgTable(
     locationMapsUrl: text("location_maps_url"),
     /** 019 — minutos de anticipación que se le piden al cliente al llegar. */
     arrivalLeadMinutes: integer("arrival_lead_minutes").notNull().default(5),
+    /** 019 — coordenadas del local para el pin de WhatsApp; ambas o ninguna. */
+    latitude: doublePrecision("latitude"),
+    longitude: doublePrecision("longitude"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
@@ -731,6 +735,14 @@ export const calendarSettings = pgTable(
     check(
       "calendar_settings_arrival_lead_ck",
       sql`${t.arrivalLeadMinutes} between 0 and 120`
+    ),
+    check(
+      "calendar_settings_latitude_ck",
+      sql`${t.latitude} is null or ${t.latitude} between -90 and 90`
+    ),
+    check(
+      "calendar_settings_longitude_ck",
+      sql`${t.longitude} is null or ${t.longitude} between -180 and 180`
     ),
   ]
 );

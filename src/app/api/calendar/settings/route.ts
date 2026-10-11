@@ -64,6 +64,9 @@ const putSchema = z.object({
     .min(LIMITS.arrivalLeadMinutes.min)
     .max(LIMITS.arrivalLeadMinutes.max)
     .optional(),
+  // 019 — pin de ubicación. `null` los borra; van juntos (lo comprueba el servicio).
+  latitude: z.number().min(-90).max(90).nullish(),
+  longitude: z.number().min(-180).max(180).nullish(),
 });
 
 function isHttpsUrl(value: string): boolean {

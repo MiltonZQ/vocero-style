@@ -452,11 +452,16 @@ export type LocationInput = {
 
 export type ContactInput = { name: string; phone: string };
 
-/** 008 — Envía una ubicación o contactos (payload estructurado, sin archivo). */
+/**
+ * 008 — Envía una ubicación o contactos (payload estructurado, sin archivo).
+ * `aiGenerated` marca el mensaje como del agente (019: el pin del local tras
+ * confirmar una cita); sin él es del operador, como siempre.
+ */
 export async function sendStructured(
   input: {
     conversationId: string;
     organizationId: string;
+    aiGenerated?: boolean;
   } & (
     | { kind: "location"; location: LocationInput }
     | { kind: "contacts"; contacts: ContactInput[] }
@@ -512,7 +517,8 @@ export async function sendStructured(
     type: input.kind,
     text: null,
     status: "pending",
-    origin: "operator",
+    aiGenerated: input.aiGenerated,
+    origin: input.aiGenerated ? "ai" : "operator",
     mediaAssetId: asset.id,
     media: asset,
   });

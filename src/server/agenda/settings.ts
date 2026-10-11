@@ -48,6 +48,9 @@ export type CalendarSettings = {
   locationMapsUrl: string | null;
   /** 019 — minutos de anticipación que se le recomiendan al cliente. */
   arrivalLeadMinutes: number;
+  /** 019 — coordenadas del local (pin de WhatsApp); ambas o ninguna. */
+  latitude: number | null;
+  longitude: number | null;
 };
 
 /** Lo que ve una instancia recién encendida: útil sin configurar nada. */
@@ -63,6 +66,8 @@ export const DEFAULT_CALENDAR_SETTINGS: CalendarSettings = {
   locationAddress: null,
   locationMapsUrl: null,
   arrivalLeadMinutes: 5,
+  latitude: null,
+  longitude: null,
 };
 
 export const ADDRESS_MAX_LENGTH = 300;
@@ -103,6 +108,8 @@ export async function getSettings(
     locationAddress: row.locationAddress,
     locationMapsUrl: row.locationMapsUrl,
     arrivalLeadMinutes: row.arrivalLeadMinutes,
+    latitude: row.latitude,
+    longitude: row.longitude,
   };
 }
 
@@ -142,6 +149,11 @@ export async function upsertSettings(
   if (!isConnectorId(connector)) {
     throw new CalendarSettingsError(`Conector desconocido: ${connector}`);
   }
+
+  const coordinates = normalizeCoordinates(
+    input.latitude !== undefined ? input.latitude : current.latitude,
+    input.longitude !== undefined ? input.longitude : current.longitude
+  );
 
   const next: CalendarSettings = {
     weeklyHours: normalizeWeeklyHours(
@@ -183,6 +195,8 @@ export async function upsertSettings(
       LIMITS.arrivalLeadMinutes.min,
       LIMITS.arrivalLeadMinutes.max
     ),
+    latitude: coordinates.latitude,
+    longitude: coordinates.longitude,
   };
 
   const db = getDb();
@@ -198,6 +212,8 @@ export async function upsertSettings(
     locationAddress: next.locationAddress,
     locationMapsUrl: next.locationMapsUrl,
     arrivalLeadMinutes: next.arrivalLeadMinutes,
+    latitude: next.latitude,
+    longitude: next.longitude,
   };
   await db
     .insert(schema.calendarSettings)
@@ -266,6 +282,30 @@ export function normalizeMapsUrl(url: string | null | undefined): string | null 
     throw new CalendarSettingsError("El enlace de Google Maps debe empezar con https://");
   }
   return trimmed;
+}
+
+/**
+ * 019 — Latitud y longitud van juntas o no van: un pin con una sola mitad
+ * caería en el mar. Fuera de rango se rechaza (no se recorta): el cliente
+ * recibiría un pin en otro lugar.
+ */
+export function normalizeCoordinates(
+  latitude: number | null | undefined,
+  longitude: number | null | undefined
+): { latitude: number | null; longitude: number | null } {
+  const lat = latitude ?? null;
+  const lng = longitude ?? null;
+  if (lat === null && lng === null) return { latitude: null, longitude: null };
+  if (lat === null || lng === null) {
+    throw new CalendarSettingsError("Latitud y longitud van juntas: llena las dos o deja las dos vacías");
+  }
+  if (!Number.isFinite(lat) || Math.abs(lat) > 90) {
+    throw new CalendarSettingsError("La latitud debe estar entre -90 y 90");
+  }
+  if (!Number.isFinite(lng) || Math.abs(lng) > 180) {
+    throw new CalendarSettingsError("La longitud debe estar entre -180 y 180");
+  }
+  return { latitude: lat, longitude: lng };
 }
 
 function clampInt(value: number, min: number, max: number): number {

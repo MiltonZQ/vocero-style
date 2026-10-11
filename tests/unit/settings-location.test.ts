@@ -49,7 +49,7 @@ const put = (body: unknown) =>
 
 async function row(orgId = "org1") {
   const rows = await eph.run(
-    `SELECT location_address, location_maps_url, arrival_lead_minutes FROM calendar_settings WHERE organization_id = '${orgId}'`
+    `SELECT location_address, location_maps_url, arrival_lead_minutes, latitude, longitude FROM calendar_settings WHERE organization_id = '${orgId}'`
   );
   return rows[0];
 }
@@ -171,5 +171,90 @@ describeDb("agenda settings: shop location (real DB)", () => {
       location_address: "Calle de org2",
       arrival_lead_minutes: 20,
     });
+  });
+});
+
+describeDb("agenda settings: shop coordinates for the location pin (real DB)", () => {
+  it("defaults to no coordinates", async () => {
+    const { settings } = await (await GET()).json();
+    expect(settings).toMatchObject({ latitude: null, longitude: null });
+  });
+
+  it("saves latitude and longitude and reads them back", async () => {
+    const res = await put({ latitude: 4.598865027392155, longitude: -74.1632885539481 });
+    expect(res.status).toBe(200);
+    expect((await res.json()).settings).toMatchObject({
+      latitude: 4.598865027392155,
+      longitude: -74.1632885539481,
+    });
+    expect(await row()).toMatchObject({ latitude: 4.598865027392155, longitude: -74.1632885539481 });
+    const { settings } = await (await GET()).json();
+    expect(settings).toMatchObject({ latitude: 4.598865027392155, longitude: -74.1632885539481 });
+  });
+
+  it("null clears both", async () => {
+    await put({ latitude: 19.4, longitude: -99.1 });
+    const res = await put({ latitude: null, longitude: null });
+    expect(res.status).toBe(200);
+    expect(await row()).toMatchObject({ latitude: null, longitude: null });
+  });
+
+  it("a partial update leaves the coordinates untouched", async () => {
+    await put({ latitude: 19.4, longitude: -99.1 });
+    await put({ slotMinutes: 45 });
+    expect(await row()).toMatchObject({ latitude: 19.4, longitude: -99.1 });
+  });
+
+  it.each([
+    { latitude: 91, longitude: 0 },
+    { latitude: -91, longitude: 0 },
+    { latitude: 0, longitude: 181 },
+    { latitude: 0, longitude: -181 },
+    { latitude: "4.5", longitude: "-74" },
+  ])("rejects coordinates out of range or not numbers: %j", async (body) => {
+    expect((await put(body)).status).toBe(422);
+    expect(await row()).toBeUndefined();
+  });
+
+  it("rejects latitude without longitude and the other way round", async () => {
+    for (const body of [{ latitude: 4.5 }, { longitude: -74.1 }, { latitude: 4.5, longitude: null }]) {
+      const res = await put(body);
+      expect(res.status).toBe(422);
+      expect((await res.json()).error?.message ?? "").toMatch(/latitud y longitud/i);
+    }
+    expect(await row()).toBeUndefined();
+  });
+
+  it("only the owner can change them, and each organization keeps its own", async () => {
+    h.actor.role = "reception";
+    expect((await put({ latitude: 1, longitude: 2 })).status).toBe(403);
+    h.actor.role = "owner";
+    await put({ latitude: 1, longitude: 2 });
+    h.actor.organizationId = "org2";
+    await put({ latitude: 3, longitude: 4 });
+    expect(await row("org1")).toMatchObject({ latitude: 1, longitude: 2 });
+    expect(await row("org2")).toMatchObject({ latitude: 3, longitude: 4 });
+  });
+
+  it("migration 0016 is re-runnable and the database also enforces the ranges", async () => {
+    await eph.applyOne("0016_barber_bot_location_pin");
+    const cols = await eph.run(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'calendar_settings'
+          AND column_name IN ('latitude', 'longitude')`
+    );
+    expect(cols).toHaveLength(2);
+    await expect(
+      eph.run(
+        `INSERT INTO calendar_settings (id, organization_id, weekly_hours, latitude, longitude)
+           VALUES ('calx', 'org1', '{}'::jsonb, 91, 0)`
+      )
+    ).rejects.toThrow();
+    await expect(
+      eph.run(
+        `INSERT INTO calendar_settings (id, organization_id, weekly_hours, latitude, longitude)
+           VALUES ('caly', 'org1', '{}'::jsonb, 0, -181)`
+      )
+    ).rejects.toThrow();
   });
 });

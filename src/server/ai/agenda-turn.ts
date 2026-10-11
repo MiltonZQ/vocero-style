@@ -67,8 +67,18 @@ const STUCK_TEXT =
 const GENERIC_ERROR_TEXT =
   "No pude agendarlo en este momento. Lo reviso con el equipo y te confirmo.";
 
+/** El pin de WhatsApp del local (mensaje `location` de la Cloud API). */
+export type LocationPin = {
+  latitude: number;
+  longitude: number;
+  name: string;
+  address?: string;
+};
+
 export type AgendaDeps = {
   deliver(text: string): Promise<void>;
+  /** Manda el pin del local. Puede fallar: la cita ya está hecha. */
+  deliverLocation(pin: LocationPin): Promise<void>;
   handoff(reason: "atascado" | "error"): Promise<void>;
   /** La cita quedó registrada: refresca la bandeja. */
   notifyBooked(): void;
@@ -403,7 +413,7 @@ async function handleBookSlot(
   action: Extract<AgentActionType, { action: "book_slot" }>,
   state: AgendaState,
   ctx: AgendaContext
-): Promise<{ booked: boolean; text: string }> {
+): Promise<{ booked: boolean; text: string; pin?: LocationPin }> {
   const { conversation, catalog, settings } = ctx;
   // Solo se puede elegir lo que el cliente alcanzó a leer.
   const shown = state.offers.slice(0, SHOWN_OPTIONS);
@@ -441,8 +451,19 @@ async function handleBookSlot(
     const location = await getShopLocation(conversation.organizationId);
     const serviceName =
       catalog.services.find((s) => s.id === booked.booking.serviceId)?.name ?? "Cita";
+    // Con coordenadas el cliente recibe el pin: el enlace de Maps sobra en el texto.
+    const pin: LocationPin | undefined =
+      location.latitude !== null && location.longitude !== null
+        ? {
+            latitude: location.latitude,
+            longitude: location.longitude,
+            name: ctx.businessName ?? "Ubicación del local",
+            ...(location.locationAddress ? { address: location.locationAddress } : {}),
+          }
+        : undefined;
     return {
       booked: true,
+      ...(pin ? { pin } : {}),
       text: buildConfirmation({
         serviceName,
         staffName: booked.staffName,
@@ -452,7 +473,7 @@ async function handleBookSlot(
         currency: booked.booking.currency ?? "MXN",
         timezone: settings.timezone,
         locationAddress: location.locationAddress,
-        locationMapsUrl: location.locationMapsUrl,
+        locationMapsUrl: pin ? null : location.locationMapsUrl,
         arrivalLeadMinutes: location.arrivalLeadMinutes,
         locale: "es-MX",
       }),
@@ -578,6 +599,14 @@ export async function runAgendaAction(
         await clearDraft(ctx.conversation.organizationId, ctx.conversation.id);
         await deps.deliver(result.text);
         deps.notifyBooked();
+        if (result.pin) {
+          // La cita ya quedó: un pin que falla se registra, no se propaga.
+          try {
+            await deps.deliverLocation(result.pin);
+          } catch (err) {
+            console.warn(`[agente] no se pudo enviar el pin del local: ${err}`);
+          }
+        }
         return { kind: "sent" };
       }
       text = result.text;
