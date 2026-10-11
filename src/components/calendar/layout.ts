@@ -188,3 +188,30 @@ export function containsMinute(intervals: MinuteSpan[], minute: number): boolean
 export function offsetPx(minute: number, windowStart: number): number {
   return ((minute - windowStart) / 60) * HOUR_HEIGHT_PX;
 }
+
+/** Room above the first hour line so its label is not clipped by the scroller. */
+export const GRID_PAD_PX = 18;
+
+export function trackTop(minute: number, windowStart: number): number {
+  return GRID_PAD_PX + offsetPx(minute, windowStart);
+}
+
+export function trackHeight(windowStart: number, windowEnd: number): number {
+  return trackTop(windowEnd, windowStart) + 8;
+}
+
+/**
+ * The block starts 2px under its hour line and stops 2px before the next
+ * line, so the guide stays visible and the label is not covered.
+ */
+export function eventFrame(
+  start: number,
+  end: number,
+  windowStart: number
+): { top: number; height: number } {
+  const span = Math.max(offsetPx(end, windowStart) - offsetPx(start, windowStart), 0);
+  return {
+    top: trackTop(start, windowStart) + 2,
+    height: Math.max(span - 4, 18),
+  };
+}

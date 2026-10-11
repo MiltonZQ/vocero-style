@@ -15,10 +15,13 @@ import {
   closedGaps,
   containsMinute,
   formatMinute,
+  eventFrame,
   gridWindow,
   minutesOnDay,
   offsetPx,
   parseHHMM,
+  trackHeight,
+  trackTop,
   placeSideBySide,
   snapMinutes,
   wallMinuteToUtc,
@@ -237,7 +240,7 @@ export function CalendarBoard() {
 
   const hourSource = board?.columns.flatMap((column) => columnHours(column)) ?? [];
   const grid = board && visibleDate ? gridWindow(hourSource, occupied) : null;
-  const gridHeight = grid ? offsetPx(grid.end, grid.start) : 0;
+  const gridHeight = grid ? trackHeight(grid.start, grid.end) : 0;
 
   function shift(direction: -1 | 1) {
     if (!fromOk) return;
@@ -381,8 +384,12 @@ export function CalendarBoard() {
                 {hourMarks(grid.start, grid.end).map((minute) => (
                   <span
                     key={minute}
-                    className="absolute right-1 -translate-y-1/2 font-mono text-[10px] text-text-3"
-                    style={{ top: offsetPx(minute, grid.start) }}
+                    className={
+                      minute === grid.start
+                        ? "absolute right-1 font-mono text-[10px] leading-none text-text-3"
+                        : "absolute right-1 -translate-y-1/2 font-mono text-[10px] leading-none text-text-3"
+                    }
+                    style={{ top: trackTop(minute, grid.start) }}
                   >
                     {formatMinute(minute)}
                   </span>
@@ -393,7 +400,7 @@ export function CalendarBoard() {
                   <div
                     key={minute}
                     className="pointer-events-none absolute inset-x-0 z-0 border-t border-border"
-                    style={{ top: offsetPx(minute, grid.start) }}
+                    style={{ top: trackTop(minute, grid.start) }}
                   />
                 ))}
                 {board.columns.map((column, columnIndex) => {
@@ -423,7 +430,7 @@ export function CalendarBoard() {
                           key={`${gap.start}-${gap.end}`}
                           className="pointer-events-none absolute inset-x-0 bg-subtle"
                           style={{
-                            top: offsetPx(gap.start, grid.start),
+                            top: trackTop(gap.start, grid.start),
                             height: offsetPx(gap.end, gap.start),
                           }}
                         />
@@ -439,19 +446,18 @@ export function CalendarBoard() {
                         if (start == null || end == null) return null;
                         const clipped = clipToWindow(start, end, grid.start, grid.end);
                         if (!clipped) return null;
-                        const top = offsetPx(clipped.start, grid.start);
-                        const height = Math.max(offsetPx(clipped.end, clipped.start), 18);
+                        const frame = eventFrame(clipped.start, clipped.end, grid.start);
                         return (
                           <div key={block.id}>
                             <div
                               className="pointer-events-none absolute inset-x-0 z-10 border-y border-warning-soft bg-warning-tint"
-                              style={{ top, height }}
+                              style={frame}
                             />
                             {columnIndex === 0 && (
                               <button
                                 type="button"
                                 className="absolute z-30 truncate px-1 text-left text-[11px] text-warning-text"
-                                style={{ top, height: 18, left: 2, right: 2 }}
+                                style={{ top: frame.top, height: Math.min(frame.height, 18), left: 2, right: 2 }}
                                 onClick={(event) => {
                                   event.stopPropagation();
                                   setDialog({ mode: "existing", booking: block });
@@ -463,37 +469,43 @@ export function CalendarBoard() {
                           </div>
                         );
                       })}
-                      {placed.map((booking) => (
-                        <button
-                          key={booking.id}
-                          type="button"
-                          className={
-                            booking.kind === "block"
-                              ? "absolute z-20 overflow-hidden rounded-sm border border-dashed bg-subtle px-1 text-left text-[11px]"
-                              : "absolute z-20 overflow-hidden rounded-sm border bg-card px-1 text-left text-[11px] shadow-sm"
-                          }
-                          style={{
-                            top: offsetPx(booking.start, grid.start),
-                            height: Math.max(offsetPx(booking.end, booking.start), 22),
-                            left: `calc(${(booking.lane / booking.laneCount) * 100}% + 2px)`,
-                            width: `calc(${100 / booking.laneCount}% - 4px)`,
-                            borderColor: column.color ?? undefined,
-                            opacity: booking.status === "cancelada" ? 0.55 : 1,
-                          }}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            setDialog({ mode: "existing", booking });
-                          }}
-                        >
-                          <span className="block truncate font-semibold">
-                            {timeInTz(booking.startUtc, board.timeZone)}
-                            {booking.kind === "block" ? " · Bloqueo" : ""}
-                          </span>
-                          <span className="block truncate text-text-3">
-                            {statusLabel(booking.status)}
-                          </span>
-                        </button>
-                      ))}
+                      {placed.map((booking) => {
+                        const frame = eventFrame(booking.start, booking.end, grid.start);
+                        const range = bookingRange(booking, board.timeZone);
+                        const roomy = frame.height >= 32;
+                        const detail = booking.kind === "block" ? "Bloqueo" : statusLabel(booking.status);
+                        return (
+                          <button
+                            key={booking.id}
+                            type="button"
+                            className={
+                              booking.kind === "block"
+                                ? "absolute z-20 overflow-hidden rounded-sm border border-dashed bg-subtle px-1.5 pt-1 text-left text-[11px] leading-tight"
+                                : "absolute z-20 overflow-hidden rounded-sm border bg-card px-1.5 pt-1 text-left text-[11px] leading-tight shadow-sm"
+                            }
+                            style={{
+                              top: frame.top,
+                              height: frame.height,
+                              left: `calc(${(booking.lane / booking.laneCount) * 100}% + 2px)`,
+                              width: `calc(${100 / booking.laneCount}% - 4px)`,
+                              borderColor: column.color ?? undefined,
+                              opacity: booking.status === "cancelada" ? 0.55 : 1,
+                            }}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setDialog({ mode: "existing", booking });
+                            }}
+                          >
+                            <span className="block truncate">
+                              <span className="font-semibold">{range}</span>
+                              {roomy ? null : <span className="text-text-3"> · {detail}</span>}
+                            </span>
+                            {roomy ? (
+                              <span className="mt-0.5 block truncate text-text-3">{detail}</span>
+                            ) : null}
+                          </button>
+                        );
+                      })}
                     </div>
                   );
                 })}
@@ -515,6 +527,16 @@ export function CalendarBoard() {
       )}
     </div>
   );
+}
+
+function bookingRange(
+  booking: { startUtc: string; endUtc: string; kind: string },
+  timeZone: string
+): string {
+  const start = timeInTz(booking.startUtc, timeZone);
+  const end = timeInTz(booking.endUtc, timeZone);
+  if (!end || end === start) return start;
+  return `${start}–${end}`;
 }
 
 function hourMarks(start: number, end: number): number[] {

@@ -8,7 +8,10 @@ import {
   gridWindow,
   minutesOnDay,
   placeSideBySide,
+  eventFrame,
+  GRID_PAD_PX,
   snapMinutes,
+  trackTop,
   wallMinuteToUtc,
 } from "../../src/components/calendar/layout";
 
@@ -30,6 +33,15 @@ describe("calendar grid layout", () => {
       [{ start: 8 * 60, end: 8 * 60 + 30 }]
     );
     expect(window).toEqual({ start: 8 * 60, end: 14 * 60, closed: false });
+  });
+
+  it("keeps a 09:00 booking under the hour line, inside the top padding", () => {
+    const nine = 9 * 60;
+    const frame = eventFrame(nine, nine + 45, nine);
+    expect(trackTop(nine, nine)).toBe(GRID_PAD_PX);
+    expect(frame.top).toBe(GRID_PAD_PX + 2);
+    expect(frame.top).toBeGreaterThan(trackTop(nine, nine));
+    expect(frame.height).toBeGreaterThan(18);
   });
 
   it("places overlapping bookings side by side and leaves a later one full width", () => {
