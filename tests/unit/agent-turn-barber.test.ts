@@ -76,7 +76,8 @@ beforeAll(async () => {
     INSERT INTO service (id, organization_id, name, duration_minutes, price_cents, position) VALUES
       ('sv_fade', 'org1', 'Fade', 45, 25000, 1),
       ('sv_corte', 'org1', 'Corte clásico', 30, 20000, 2),
-      ('sv_barba', 'org1', 'Barba', 30, 15000, 3);
+      ('sv_barba', 'org1', 'Barba', 30, 15000, 3),
+      ('sv_cejas', 'org1', 'Cejas', 15, 8000, 4);
     INSERT INTO staff (id, organization_id, display_name, position) VALUES
       ('st_charly', 'org1', 'Charly', 1), ('st_luis', 'org1', 'Luis', 2),
       ('st_ana', 'org1', 'Ana', 3), ('st_charlie', 'org1', 'Charlie', 4);
@@ -84,7 +85,8 @@ beforeAll(async () => {
       ('st_charly', 'sv_fade', 'org1'), ('st_charly', 'sv_corte', 'org1'),
       ('st_luis', 'sv_fade', 'org1'), ('st_luis', 'sv_corte', 'org1'), ('st_luis', 'sv_barba', 'org1'),
       ('st_ana', 'sv_corte', 'org1'), ('st_ana', 'sv_barba', 'org1'),
-      ('st_charlie', 'sv_barba', 'org1');
+      ('st_charlie', 'sv_barba', 'org1'),
+      ('st_ana', 'sv_cejas', 'org1');
   `);
   ({ runAgentTurn } = await import("@/server/ai/pipeline"));
 });
@@ -375,22 +377,60 @@ describeDb("barber agent turn (real DB)", () => {
     expect((await conversationRow())?.handoff_at).toBeNull();
   });
 
-  it("hands off as stuck after three turns without progress", async () => {
-    await turn("jeje", { action: "reply", text: "¿Qué servicio quieres?" });
-    await turn("jaja", { action: "reply", text: "¿Qué servicio quieres?" });
+  it("hands off as stuck after three booking turns without progress", async () => {
+    await turn("la primera", { action: "book_slot", option: 1 });
+    await turn("la primera", { action: "book_slot", option: 1 });
     expect((await conversationRow())?.handoff_at).toBeNull();
-    const text = await turn("mmm", { action: "reply", text: "¿Qué servicio quieres?" });
+    const text = await turn("la primera", { action: "book_slot", option: 1 });
     expect(text).toContain("Te paso con alguien del equipo");
     expect((await conversationRow())?.handoff_reason).toBe("atascado");
   });
 
+  it("FAQ replies, my_bookings, lead notes and stage moves never count as stuck", async () => {
+    for (let i = 0; i < 3; i++) {
+      await turn("¿dónde están?", { action: "reply", text: "Estamos en Av. Juárez 123." });
+    }
+    await turn("¿cuándo es mi cita?", { action: "my_bookings" });
+    await turn("soy fan", { action: "update_lead", note: "le gusta el fade" });
+    await turn("hola", { action: "reply", text: "Hola" });
+    expect((await conversationRow())?.handoff_at).toBeNull();
+    expect((await draft())?.stuck_turns ?? 0).toBe(0);
+  });
+
+  it("FAQ replies in between do not reset the stuck counter", async () => {
+    await turn("la primera", { action: "book_slot", option: 1 });
+    await turn("la primera", { action: "book_slot", option: 1 });
+    await turn("¿dónde están?", { action: "reply", text: "Av. Juárez 123." });
+    expect((await draft())?.stuck_turns).toBe(2);
+    await turn("la primera", { action: "book_slot", option: 1 });
+    expect((await conversationRow())?.handoff_reason).toBe("atascado");
+  });
+
   it("progress resets the stuck counter", async () => {
-    await turn("jeje", { action: "reply", text: "x" });
-    await turn("jaja", { action: "reply", text: "x" });
+    await turn("la primera", { action: "book_slot", option: 1 });
+    await turn("la primera", { action: "book_slot", option: 1 });
     await turn("fade", { action: "update_draft", service: "Fade" });
     expect((await draft())?.stuck_turns).toBe(0);
-    await turn("mmm", { action: "reply", text: "x" });
+    await turn("la primera", { action: "book_slot", option: 1 });
     expect((await conversationRow())?.handoff_at).toBeNull();
+  });
+
+  it("auto-picks the only barber who does the service and names them in the offer", async () => {
+    const text = await turn("quiero cejas", { action: "update_draft", service: "Cejas" });
+    expect(text).toContain("Ana");
+    expect(text).toMatch(/1\) .*a las/);
+    expect(text).not.toContain("Cualquiera");
+    const row = await draft();
+    expect(row?.staff_choice).toBe("st_ana");
+    const offers = await eph.run(`SELECT staff_id, any_staff FROM offered_slot`);
+    expect(offers.length).toBeGreaterThan(0);
+    expect(offers.every((o) => o.staff_id === "st_ana" && o.any_staff === false)).toBe(true);
+  });
+
+  it("does not auto-pick when several barbers do the service", async () => {
+    const text = await turn("quiero un fade", { action: "update_draft", service: "Fade" });
+    expect(text).toContain("Cualquiera");
+    expect((await draft())?.staff_choice).toBeNull();
   });
 });
 

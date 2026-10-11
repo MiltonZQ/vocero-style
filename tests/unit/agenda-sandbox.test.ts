@@ -294,7 +294,7 @@ describe("una cita del Laboratorio jamás llega al proveedor", () => {
   });
 
   it("con profesional y servicio en la oferta, la cita de prueba tampoco llama al conector", async () => {
-    const { bookSlot } = await import("@/server/agenda/agent");
+    const { bookFromOffer } = await import("@/server/agenda/agent");
     currentOffers = [
       {
         startUtc: SLOT,
@@ -307,13 +307,13 @@ describe("una cita del Laboratorio jamás llega al proveedor", () => {
     ];
     primeCatalog(true);
 
-    const turn = await bookSlot({
+    const booked = await bookFromOffer({
       organizationId: "org_1",
       conversationId: "cv_lab",
       startUtc: SLOT,
     });
 
-    expect(turn.ok).toBe(true);
+    expect(booked.booking).toBeDefined();
     expect(lastInsert?.isTest).toBe(true);
     expect(lastInsert?.staffId).toBe("st_1");
     expect(lastInsert?.serviceId).toBe("sv_1");

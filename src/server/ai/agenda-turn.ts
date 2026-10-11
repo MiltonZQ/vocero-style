@@ -314,6 +314,15 @@ async function handleUpdateDraft(
     }
   }
 
+  // Un solo profesional hace el servicio: no hay nada que preguntar.
+  if (!blocking && service && !staffChoice && service.staff.length === 1) {
+    const only = service.staff[0];
+    if (only) {
+      staffChoice = only.id;
+      notes.push(`${service.name} lo hace ${only.displayName}.`);
+    }
+  }
+
   const nextWhen: DraftWhen = {};
   if (action.when?.day?.trim()) nextWhen.day = action.when.day.trim();
   if (action.when?.from?.trim()) nextWhen.from = action.when.from.trim();
@@ -516,11 +525,23 @@ export async function runAgendaAction(
     text = GENERIC_ERROR_TEXT;
   }
 
-  const after = await loadAgendaState(ctx);
-  if (await trackProgress(before, after, ctx)) {
-    await deps.deliver(STUCK_TEXT);
-    await deps.handoff("atascado");
-    return { kind: "sent" };
+  // Solo los turnos del flujo de reserva cuentan como "sin avance": una
+  // pregunta frecuente, "mis citas" o una nota de lead ni suman ni reinician.
+  const bookingTurn =
+    guard.kind === "redirect" ||
+    action.action === "update_draft" ||
+    action.action === "book_slot";
+  if (bookingTurn) {
+    const after = await loadAgendaState(ctx);
+    if (await trackProgress(before, after, ctx)) {
+      await deps.deliver(STUCK_TEXT);
+      await deps.handoff("atascado");
+      return { kind: "sent" };
+    }
+  } else {
+    await upsertDraft(ctx.conversation.organizationId, ctx.conversation.id, {
+      failedTurns: 0,
+    });
   }
   if (text === null) return { kind: "delegate" };
   await deps.deliver(text);

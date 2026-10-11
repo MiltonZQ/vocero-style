@@ -88,11 +88,12 @@ recepción.
 
 ## US6 — El agente asigna profesional
 
-1. Por la API, con wa-mock y ai-mock: ofrecer huecos y reservar el primero,
-   con profesional nombrado y con «cualquiera».
+1. Por la API, con wa-mock y ai-mock: el agente lleva el borrador
+   (`update_draft`: servicio, profesional o «cualquiera», día y hora), el código
+   ofrece los huecos y `book_slot{option}` reserva la opción numerada.
    → `agenteMultiChecks()`, al final de `agendaChecks()` cuando `AGENDA=on`.
    Con la bandera apagada esa función no corre: el prompt no lleva
-   `offer_slots` ni `book_slot`.
+   `update_draft` ni `book_slot`.
 2. En pantalla (SC-007): la cita del agente aparece en `/calendar` en menos
    de 5 s desde que ya existe, por el SSE `booking.updated`.
    → `pnpm test:e2e:agenda-ui`. Si el mock no logra reservar, ese paso sale
