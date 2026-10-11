@@ -16,7 +16,9 @@ export type ShopLocation = {
   longitude: number | null;
 };
 
-export { parseMapsCoordinates } from "@/lib/maps-coordinates";
+import { parseMapsCoordinates } from "@/lib/maps-coordinates";
+
+export { parseMapsCoordinates };
 
 export const DEFAULT_LOCATION: ShopLocation = {
   locationAddress: null,
@@ -41,7 +43,13 @@ export async function getShopLocation(
     .from(schema.calendarSettings)
     .where(scoped(schema.calendarSettings.organizationId, organizationId))
     .limit(1);
-  return row ?? DEFAULT_LOCATION;
+  if (!row) return DEFAULT_LOCATION;
+  // Sin coordenadas guardadas pero con un enlace que las trae: el pin sale igual.
+  if ((row.latitude === null || row.longitude === null) && row.locationMapsUrl) {
+    const parsed = parseMapsCoordinates(row.locationMapsUrl);
+    if (parsed.ok) return { ...row, latitude: parsed.lat, longitude: parsed.lng };
+  }
+  return row;
 }
 
 // Used only to keep the eq import honest for future filters.

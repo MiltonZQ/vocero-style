@@ -78,7 +78,6 @@ function pickDay(
   raw: string,
   today: string,
   tz: string,
-  weekdayStillPossible: (iso: string) => boolean
 ): DayPick {
   const text = normalizeText(raw);
   if (!text) return { kind: "none" };
@@ -89,11 +88,11 @@ function pickDay(
   }
   const weekday = WEEKDAY_BY_NAME[text];
   if (weekday) {
-    // Siguiente ocurrencia; hoy cuenta mientras todavía quede ventana.
+    // Primera ocurrencia desde hoy: el día de hoy SIEMPRE es hoy, nunca la
+    // semana próxima. Si hoy ya no tiene lugar, el fallback ofrece lo más cercano.
     for (let offset = 0; offset < 8; offset++) {
       const iso = addDaysISO(today, offset);
       if (weekdayKeyOf(iso, tz) !== weekday) continue;
-      if (offset === 0 && !weekdayStillPossible(iso)) continue;
       return { kind: "day", iso, spoken: "weekday" };
     }
     return { kind: "invalid" };
@@ -140,7 +139,7 @@ export function resolveWhen(input: WhenInput, now: Date, settings: WhenSettings)
       : startOfDay(addDaysISO(iso, 1), tz),
   });
 
-  const pick = pickDay(input.day ?? "", today, tz, (iso) => windowOf(iso).end > earliest);
+  const pick = pickDay(input.day ?? "", today, tz);
   if (pick.kind === "invalid") return INVALID;
 
   if (pick.kind === "none") {

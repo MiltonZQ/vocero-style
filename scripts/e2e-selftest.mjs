@@ -2408,10 +2408,10 @@ async function barberBotChecks() {
       const saludo = await respuesta(convG.id, 1);
       const cg = await refrescar(convG.id);
       ok(
-        "'Hola' → '¿Cómo estás?' y '¿En cuál de nuestros servicios…', nombrando el servicio",
+        "'Hola' → '¿Cómo estás?' y termina en '¿En cuál de nuestros servicios estás interesado?', sin lista",
         saludo.includes("¿Cómo estás?") &&
-          saludo.includes("¿En cuál de nuestros servicios") &&
-          saludo.includes(BARBER_SERVICE_NAME) &&
+          saludo.trimEnd().endsWith("¿En cuál de nuestros servicios estás interesado?") &&
+          !saludo.includes("Contamos con") &&
           !saludo.includes("$"),
         saludo
       );

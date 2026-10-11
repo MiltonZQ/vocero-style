@@ -77,7 +77,8 @@ beforeAll(async () => {
       ('sv_fade', 'org1', 'Fade', 45, 25000, 1),
       ('sv_corte', 'org1', 'Corte clásico', 30, 20000, 2),
       ('sv_barba', 'org1', 'Barba', 30, 15000, 3),
-      ('sv_cejas', 'org1', 'Cejas', 15, 8000, 4);
+      ('sv_cejas', 'org1', 'Cejas', 15, 8000, 4),
+      ('sv_mascarilla', 'org1', 'Mascarilla', 60, 30000, 5);
     INSERT INTO staff (id, organization_id, display_name, position) VALUES
       ('st_charly', 'org1', 'Charly', 1), ('st_luis', 'org1', 'Luis', 2),
       ('st_ana', 'org1', 'Ana', 3), ('st_charlie', 'org1', 'Charlie', 4);
@@ -435,12 +436,57 @@ describeDb("barber agent turn (real DB)", () => {
 });
 
 describeDb("barber agent turn - receptionist tone (real DB)", () => {
-  it("greets by business name and lists the services, with no booking intent", async () => {
+  it("greets by business name and ends at the question, with no service list", async () => {
     const text = await turn("hola", { action: "greeting" });
     expect(text).toBe(
-      "¡Hola! ¿Cómo estás? Te damos la bienvenida a Style. ¿En cuál de nuestros servicios estás interesado? Contamos con Fade, Corte clásico, Barba y Cejas."
+      "¡Hola! ¿Cómo estás? Te damos la bienvenida a Style. ¿En cuál de nuestros servicios estás interesado?"
     );
     expect((await draft())?.service_id ?? null).toBeNull();
+  });
+
+  it("list_services answers with the COMPLETE active catalog, even services nobody performs", async () => {
+    const text = await turn("¿qué servicios tienen?", { action: "list_services" });
+    expect(text).toBe(
+      [
+        "Estos son nuestros servicios:",
+        "- Fade · 45 min · $250 MXN",
+        "- Corte clásico · 30 min · $200 MXN",
+        "- Barba · 30 min · $150 MXN",
+        "- Cejas · 15 min · $80 MXN",
+        "- Mascarilla · 60 min · $300 MXN",
+        "",
+        "¿En cuál de ellos estás interesado?",
+      ].join("\n")
+    );
+    expect((await draft())?.service_id ?? null).toBeNull();
+  });
+
+  it("list_services never counts toward the stuck handoff", async () => {
+    for (let i = 0; i < 5; i++) await turn("precios?", { action: "list_services" });
+    expect((await conversationRow())?.handoff_at).toBeNull();
+  });
+
+  it("a service with no professional says it cannot be booked here and offers the bookable ones", async () => {
+    await turn("¿qué servicios tienen?", { action: "list_services" });
+    const text = await turn("quiero una mascarilla", { action: "update_draft", service: "Mascarilla" });
+    expect(text).toContain("Mascarilla");
+    expect(text).toMatch(/por ahora.*no se puede agendar por WhatsApp/i);
+    expect(text).toContain("Fade");
+    expect(text).not.toContain("Cejas ( MXN) y Mascarilla");
+    expect((await draft())?.service_id ?? null).toBeNull();
+    expect((await conversationRow())?.handoff_at).toBeNull();
+  });
+
+  it("'hoy' with nothing today says so first and offers the nearest slots", async () => {
+    // Sunday: the shop is closed all day.
+    const text = await turn("¿algo para hoy?", {
+      action: "update_draft",
+      service: "Fade",
+      staff: "any",
+      when: { day: "hoy" },
+    });
+    expect(text.startsWith("Para hoy no tenemos horarios disponibles")).toBe(true);
+    expect(text).toContain("Lo más cercano es para");
   });
 
   it("an empty update_draft (wants to book, no service yet) asks which service, without welcoming", async () => {

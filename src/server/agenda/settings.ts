@@ -1,6 +1,7 @@
 import { getDb, schema } from "@/lib/db";
 import { newId } from "@/lib/db/ids";
 import { scoped } from "@/lib/db/tenant";
+import { extractMapsUrl, parseMapsCoordinates } from "@/lib/maps-coordinates";
 import {
   DEFAULT_CONNECTOR,
   isConnectorId,
@@ -150,10 +151,19 @@ export async function upsertSettings(
     throw new CalendarSettingsError(`Conector desconocido: ${connector}`);
   }
 
-  const coordinates = normalizeCoordinates(
+  const locationMapsUrl = normalizeMapsUrl(
+    input.locationMapsUrl !== undefined ? input.locationMapsUrl : current.locationMapsUrl
+  );
+  let coordinates = normalizeCoordinates(
     input.latitude !== undefined ? input.latitude : current.latitude,
     input.longitude !== undefined ? input.longitude : current.longitude
   );
+  // Sin coordenadas pero con un enlace que las trae: el pin no depende de que
+  // el dueño las haya llenado a mano.
+  if (coordinates.latitude === null && coordinates.longitude === null && locationMapsUrl) {
+    const parsed = parseMapsCoordinates(locationMapsUrl);
+    if (parsed.ok) coordinates = { latitude: parsed.lat, longitude: parsed.lng };
+  }
 
   const next: CalendarSettings = {
     weeklyHours: normalizeWeeklyHours(
@@ -187,9 +197,7 @@ export async function upsertSettings(
     locationAddress: normalizeAddress(
       input.locationAddress !== undefined ? input.locationAddress : current.locationAddress
     ),
-    locationMapsUrl: normalizeMapsUrl(
-      input.locationMapsUrl !== undefined ? input.locationMapsUrl : current.locationMapsUrl
-    ),
+    locationMapsUrl,
     arrivalLeadMinutes: clampInt(
       input.arrivalLeadMinutes ?? current.arrivalLeadMinutes,
       LIMITS.arrivalLeadMinutes.min,
@@ -270,7 +278,8 @@ export function normalizeAddress(address: string | null | undefined): string | n
 
 /** 019 — Vacío ⇒ null. Solo https: es un enlace que el cliente va a abrir. */
 export function normalizeMapsUrl(url: string | null | undefined): string | null {
-  const trimmed = (url ?? "").trim();
+  // Un iframe pegado completo se guarda como su `src`, nunca como HTML.
+  const trimmed = extractMapsUrl(url ?? "");
   if (trimmed.length === 0) return null;
   let parsed: URL;
   try {

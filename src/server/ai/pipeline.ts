@@ -304,7 +304,8 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
   } else if (
     action.action === "update_draft" ||
     action.action === "book_slot" ||
-    action.action === "my_bookings"
+    action.action === "my_bookings" ||
+    action.action === "list_services"
   ) {
     action = degradeAction(action);
   }

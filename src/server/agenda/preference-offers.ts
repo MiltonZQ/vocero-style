@@ -6,6 +6,7 @@ import { getSettings } from "@/server/agenda/settings";
 import { spreadByDay, type SpreadSlot } from "@/server/agenda/spread";
 import { resolveWhen, type WhenSettings } from "@/server/agenda/when";
 import { timeInTz } from "@/lib/time/slots";
+import { normalizeText } from "@/server/agenda/match";
 import { formatClock12, joinNatural } from "@/server/agenda/confirmation";
 
 /**
@@ -96,6 +97,10 @@ function buildMatcher(input: PreferenceInput): Matcher {
 
   const resolved = resolveWhen({ day, from, to }, input.now, input.settings);
   if (!resolved.ok) {
+    // "Hoy" cuando ya no queda día: se dice como "hoy sin lugar", no como un regaño de anticipación.
+    if (resolved.reason === "past" && normalizeText(day ?? "") === "hoy") {
+      return { label: "hoy", test: () => false };
+    }
     return { label: null, fallbackReason: resolved.reason, test: () => true };
   }
   if (day) {
@@ -232,9 +237,12 @@ export function renderSlotSentences(
 
 function header(plan: PreferencePlan, opts: OffersMessageOptions): string | null {
   const label = plan.fallback?.label ?? plan.windowLabel;
-  const nothing = opts.staffName
-    ? `Con ${opts.staffName} no tenemos horarios disponibles para ${label}.`
-    : `No tenemos horarios disponibles para ${label}.`;
+  const nothing =
+    label === "hoy"
+      ? `Para hoy no tenemos horarios disponibles${opts.staffName ? ` con ${opts.staffName}` : ""}.`
+      : opts.staffName
+        ? `Con ${opts.staffName} no tenemos horarios disponibles para ${label}.`
+        : `No tenemos horarios disponibles para ${label}.`;
   switch (plan.kind) {
     case "match":
       return null;

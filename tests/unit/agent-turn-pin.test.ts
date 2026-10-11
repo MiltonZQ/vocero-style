@@ -155,6 +155,41 @@ describeDb("location pin after a booking (real DB)", () => {
     expect(String(h.sendText.mock.calls[1]?.[0]?.text)).toContain("https://maps.example/style");
   });
 
+  it("without stored coordinates, falls back to parsing the maps URL at booking time", async () => {
+    await eph.run(
+      `UPDATE calendar_settings SET latitude = NULL, longitude = NULL,
+         location_maps_url = 'https://www.google.com/maps/@4.5988,-74.1632,17z'`
+    );
+    await book("cv_real");
+    expect(h.sendStructured).toHaveBeenCalledTimes(1);
+    expect(h.sendStructured.mock.calls[0]?.[0]?.location).toMatchObject({
+      latitude: 4.5988,
+      longitude: -74.1632,
+      name: "Style",
+    });
+    await eph.run(`UPDATE calendar_settings SET location_maps_url = 'https://maps.example/style'`);
+  });
+
+  it("warns (no PII) when a booking is confirmed and there are no coordinates at all", async () => {
+    await eph.run(`UPDATE calendar_settings SET latitude = NULL, longitude = NULL`);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await book("cv_real");
+    expect(warn).toHaveBeenCalledWith(
+      "[agenda] cita confirmada sin coordenadas: no se envía el pin (org=org1)"
+    );
+    warn.mockRestore();
+  });
+
+  it("logs the error message of a failing pin, never the token", async () => {
+    const { SendError } = await import("@/server/inbox/send");
+    h.sendStructured.mockRejectedValue(new SendError("meta_error", "Meta rechazó la ubicación"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await book("cv_real");
+    const line = warn.mock.calls.map((c) => String(c[0])).find((l) => l.includes("pin"));
+    expect(line).toContain("Meta rechazó la ubicación");
+    warn.mockRestore();
+  });
+
   it("a failing pin never fails the booking or the confirmation", async () => {
     const { SendError } = await import("@/server/inbox/send");
     h.sendStructured.mockRejectedValue(new SendError("meta_error", "Meta rechazó la ubicación"));

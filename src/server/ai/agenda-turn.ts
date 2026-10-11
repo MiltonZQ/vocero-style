@@ -9,6 +9,7 @@ import {
   buildCatalogMessage,
   buildConfirmation,
   buildGreetingMessage,
+  buildServiceListMessage,
   buildStaffChoiceMessage,
   joinNatural,
 } from "@/server/agenda/confirmation";
@@ -324,8 +325,17 @@ async function handleUpdateDraft(
     } else if (match.kind === "many") {
       blocking = `¿Cuál de estos servicios te interesa: ${joinNatural(match.items.map((i) => i.name), "o")}?`;
     } else {
-      const hint = match.closest ? `¿Quisiste decir ${match.closest.name}? ` : "";
-      blocking = `Por ahora no ofrecemos «${askedService}». ${hint}${buildCatalogMessage(services)}`;
+      // ¿Es un servicio del negocio que nadie tiene asignado? No se agenda por aquí.
+      const unassigned = matchByName(
+        askedService,
+        ctx.catalog.services.filter((s) => s.staff.length === 0).map((s) => ({ id: s.id, name: s.name }))
+      );
+      if (unassigned.kind === "one") {
+        blocking = `Por ahora ${unassigned.item.name} no se puede agendar por WhatsApp. ${buildCatalogMessage(services)}`;
+      } else {
+        const hint = match.closest ? `¿Quisiste decir ${match.closest.name}? ` : "";
+        blocking = `Por ahora no ofrecemos «${askedService}». ${hint}${buildCatalogMessage(services)}`;
+      }
     }
   }
 
@@ -452,6 +462,11 @@ async function handleBookSlot(
     const serviceName =
       catalog.services.find((s) => s.id === booked.booking.serviceId)?.name ?? "Cita";
     // Con coordenadas el cliente recibe el pin: el enlace de Maps sobra en el texto.
+    if (location.latitude === null || location.longitude === null) {
+      console.warn(
+        `[agenda] cita confirmada sin coordenadas: no se envía el pin (org=${conversation.organizationId})`
+      );
+    }
     const pin: LocationPin | undefined =
       location.latitude !== null && location.longitude !== null
         ? {
@@ -513,6 +528,11 @@ async function handleGreeting(state: AgendaState, ctx: AgendaContext): Promise<s
     });
   }
   return askCurrentStep(state, ctx);
+}
+
+/** El catálogo ACTIVO completo, también lo que aún no tiene profesional asignado. */
+function handleListServices(ctx: AgendaContext): string {
+  return buildServiceListMessage(ctx.catalog.services);
 }
 
 async function handleMyBookings(ctx: AgendaContext): Promise<string> {
@@ -604,7 +624,8 @@ export async function runAgendaAction(
           try {
             await deps.deliverLocation(result.pin);
           } catch (err) {
-            console.warn(`[agente] no se pudo enviar el pin del local: ${err}`);
+            const reason = err instanceof Error ? err.message : String(err);
+            console.warn(`[agente] no se pudo enviar el pin del local: ${reason}`);
           }
         }
         return { kind: "sent" };
@@ -612,6 +633,8 @@ export async function runAgendaAction(
       text = result.text;
     } else if (action.action === "greeting") {
       text = await handleGreeting(before, ctx);
+    } else if (action.action === "list_services") {
+      text = handleListServices(ctx);
     } else if (action.action === "my_bookings") {
       text = await handleMyBookings(ctx);
     }

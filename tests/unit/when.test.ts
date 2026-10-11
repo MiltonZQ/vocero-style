@@ -66,10 +66,15 @@ describe("resolveWhen - days", () => {
     expect(r.startUtc).toBe("2026-10-11T18:00:00.000Z");
   });
 
-  it("today does not count once the day is over: late Sunday 'domingo' -> next Sunday", () => {
+  it("a weekday equal to today ALWAYS means today, never next week", () => {
+    const r = ok(resolveWhen({ day: "domingo" }, SUNDAY_MORNING, settings));
+    expect(r.label).toBe("el domingo 11 de octubre");
+    // Even when the window is over, it never silently rolls to next Sunday.
     const lateSunday = at("2026-10-12T04:30:00Z"); // Sun 22:30 local: notice runs past midnight
-    const r = ok(resolveWhen({ day: "domingo" }, lateSunday, settings));
-    expect(r.startUtc).toBe("2026-10-18T06:00:00.000Z");
+    expect(resolveWhen({ day: "domingo" }, lateSunday, settings)).toEqual({
+      ok: false,
+      reason: "past",
+    });
   });
 
   it("uses the SHOP zone around midnight, not UTC", () => {

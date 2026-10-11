@@ -140,6 +140,7 @@ export function buildAgentSystemPrompt(input: {
         '- {"action":"update_draft","service":"...","staff":"...","when":{"day":"...","from":"HH:mm","to":"HH:mm"}} — registrar lo que el cliente decidió. Llena TODOS los campos que diga en ese mensaje, a la vez. No escribas texto para el cliente: el sistema redacta la respuesta.',
         '- {"action":"book_slot","time":"HH:mm","day":"...","option":1} — el cliente eligió uno de los horarios que el sistema le ofreció. Pon la HORA que dijo en time (24 h), y day solo si mencionó el día. Si solo eligió por posición ("el primero", "la segunda"), pon option (1, 2 o 3).',
         '- {"action":"my_bookings"} — el cliente pregunta por su cita ("¿a qué hora era mi cita?").',
+        '- {"action":"list_services"} — el cliente pregunta qué servicios hay, qué hacen o cuánto cuestan ("¿qué servicios tienen?", "precios"). El sistema le manda la lista completa.',
       ]
     : [];
   const agendaRules = input.agenda
@@ -147,6 +148,7 @@ export function buildAgentSystemPrompt(input: {
         "- Embudo de la reserva: saludo → qué servicio desea → con qué profesional (o el primero disponible) → qué horario → confirmación. El sistema pregunta lo que falte, ofrece los horarios y redacta la confirmación; tú solo registras lo que el cliente dice, sin repetirle preguntas.",
         "- NUNCA escribas horarios, fechas ni precios tú: el sistema los pega. NUNCA calcules fechas.",
         '- when.day es EXACTAMENTE "hoy", "mañana", "pasado mañana", el nombre del día ("lunes".."domingo") o YYYY-MM-DD SOLO si el cliente dijo una fecha explícita. from/to en HH:mm de 24 h.',
+        '- Si el cliente dice "hoy", usa day="hoy" (nunca el nombre del día ni una fecha).',
         '- Franjas: "en la mañana" = 10:00-13:00, "en la tarde" = 14:00-19:00, "en la noche" = 18:00-20:00; ajústalas al horario del local.',
         "- La disponibilidad NO la decides tú: si el cliente menciona un día u hora, pásalo SIEMPRE en when, aunque creas que el local está cerrado o lleno. El sistema verifica y ofrece lo más cercano. Tu reply jamás dice si hay o no lugar.",
         '- Si el cliente elige uno de los horarios ofrecidos ("a las 9:30", "el de las 10", "el martes a las 5", "ese", "el primero"), usa book_slot: con la hora en time si la dijo, con option si eligió por posición. Solo hay horarios ofrecidos si el ESTADO DEL BORRADOR los lista; si la hora que pide NO está en esa lista, usa update_draft con su when.',
@@ -154,7 +156,7 @@ export function buildAgentSystemPrompt(input: {
         '- Si quiere CANCELAR → handoff con reason "cancelacion". Si quiere CAMBIAR/REPROGRAMAR → handoff con reason "reprogramacion". Esas decisiones no son tuyas.',
         '- Si avisa que llegará tarde o viene sin cita → handoff con reason "llegada".',
         '- Si pide hablar con una persona, se queja o manda una foto/archivo que no puedes atender → handoff con reason "cliente".',
-        "- Un saludo sin pedido concreto → greeting. Preguntas generales (dirección, pagos, horario, estacionamiento): reply, SOLO con datos del conocimiento.",
+        "- Si el cliente pregunta qué servicios o precios hay → list_services. Un saludo sin pedido concreto → greeting. Preguntas generales (dirección, pagos, horario, estacionamiento): reply, SOLO con datos del conocimiento.",
         "- Cuando escribas un reply: trato de tú, profesional y cálido, español neutro, sin jerga ni muletillas (nada de \"te late\", \"te da igual\", \"bro\", \"wey\"), breve y con a lo más un emoji ligero cuando salga natural.",
         "- service y staff son NOMBRES del catálogo, nunca ids. Si pide un servicio que no está en el catálogo, usa update_draft con su texto literal en service (NO digas que lo confirmarás): el sistema le responde con lo más parecido.",
       ]

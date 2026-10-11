@@ -257,4 +257,47 @@ describeDb("agenda settings: shop coordinates for the location pin (real DB)", (
       )
     ).rejects.toThrow();
   });
+
+  it("derives the coordinates from a maps URL when none were sent", async () => {
+    const res = await put({ locationMapsUrl: "https://www.google.com/maps/@4.5988,-74.1632,17z" });
+    expect(res.status).toBe(200);
+    expect(await row()).toMatchObject({ latitude: 4.5988, longitude: -74.1632 });
+  });
+
+  it("derives them also when the client sent explicit nulls", async () => {
+    await put({
+      locationMapsUrl: "https://www.google.com/maps?q=4.5988,-74.1632",
+      latitude: null,
+      longitude: null,
+    });
+    expect(await row()).toMatchObject({ latitude: 4.5988, longitude: -74.1632 });
+  });
+
+  it("a pasted iframe is stored as its src (never raw HTML) and gives the coordinates", async () => {
+    const iframe =
+      '<iframe src="https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d3!2d-74.1632!3d4.5988!2m3" width="600" height="450" loading="lazy"></iframe>';
+    const res = await put({ locationMapsUrl: iframe });
+    expect(res.status).toBe(200);
+    const saved = await row();
+    expect(saved?.location_maps_url).toBe(
+      "https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d3!2d-74.1632!3d4.5988!2m3"
+    );
+    expect(String(saved?.location_maps_url)).not.toContain("<");
+    expect(saved).toMatchObject({ latitude: 4.5988, longitude: -74.1632 });
+  });
+
+  it("explicit coordinates win over the ones in the URL", async () => {
+    await put({
+      locationMapsUrl: "https://www.google.com/maps/@4.5988,-74.1632,17z",
+      latitude: 10,
+      longitude: 20,
+    });
+    expect(await row()).toMatchObject({ latitude: 10, longitude: 20 });
+  });
+
+  it("a URL without coordinates saves fine and leaves them empty", async () => {
+    const res = await put({ locationMapsUrl: "https://maps.app.goo.gl/abc" });
+    expect(res.status).toBe(200);
+    expect(await row()).toMatchObject({ latitude: null, longitude: null });
+  });
 });

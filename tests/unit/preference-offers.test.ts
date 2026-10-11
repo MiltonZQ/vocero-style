@@ -334,6 +334,29 @@ describe("buildOffersMessage", () => {
     expect(text.startsWith("Ya tienes una cita.\n\n")).toBe(true);
   });
 
+  it("'hoy' with nothing today says so first, then the nearest options", () => {
+    const plan = selectPreferenceSlots({
+      when: { day: "hoy" },
+      now: NOW,
+      settings,
+      slots: dayOf(MON, ["10:00", "11:00"]),
+    });
+    expect(buildOffersMessage(plan, msgOpts)).toBe(
+      `Para hoy no tenemos horarios disponibles. Lo más cercano es para mañana lunes 12 de octubre, a las 10:00 a. m. y 11:00 a. m. ${QUESTION}`
+    );
+  });
+
+  it("'hoy' after the shop day is over says the same, not a notice-hours lecture", () => {
+    const late = new Date("2026-10-12T04:30:00Z"); // Sunday 22:30 local
+    const plan = selectPreferenceSlots({
+      when: { day: "hoy" },
+      now: late,
+      settings,
+      slots: dayOf(MON, ["10:00"]),
+    });
+    expect(buildOffersMessage(plan, msgOpts)).toMatch(/^Para hoy no tenemos horarios disponibles\. Lo más cercano/);
+  });
+
   it("tells the client there is nothing when nothing could be offered", () => {
     const plan = selectPreferenceSlots({ when: null, now: NOW, settings, slots: [] });
     expect(buildOffersMessage(plan, msgOpts)).toMatch(/no tenemos horarios disponibles/);

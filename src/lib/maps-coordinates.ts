@@ -41,6 +41,16 @@ function pair(latRaw: string | undefined, lngRaw: string | undefined): MapsParse
   return inRange(lat, lng) ? { ok: true, lat, lng } : null;
 }
 
+/**
+ * What gets stored in the "maps link" field: if the owner pasted the whole
+ * `<iframe …>` embed, only its `src` (never raw HTML); otherwise the text as is.
+ */
+export function extractMapsUrl(input: string): string {
+  const text = input.trim();
+  const src = /<iframe[^>]*\ssrc\s*=\s*["']([^"']+)["']/i.exec(text);
+  return (src?.[1] ?? text).replace(/&amp;/gi, "&").trim();
+}
+
 export function parseMapsCoordinates(input: string): MapsParseResult {
   const text = decode(input.trim());
   if (!text) return { ok: false, error: "not_found" };

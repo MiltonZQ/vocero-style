@@ -3,6 +3,7 @@ import {
   buildCatalogMessage,
   buildConfirmation,
   buildGreetingMessage,
+  buildServiceListMessage,
   buildStaffChoiceMessage,
   formatClock12,
   formatWhen,
@@ -117,28 +118,47 @@ describe("formatWhen", () => {
 });
 
 describe("buildGreetingMessage", () => {
-  it("welcomes by business name and lists the services naturally", () => {
+  it("welcomes by business name and asks for the service, with no list", () => {
     expect(
       buildGreetingMessage({
         businessName: "Style",
         services: [{ name: "Corte" }, { name: "Corte y barba" }],
       })
     ).toBe(
-      "¡Hola! ¿Cómo estás? Te damos la bienvenida a Style. ¿En cuál de nuestros servicios estás interesado? Contamos con Corte y Corte y barba."
+      "¡Hola! ¿Cómo estás? Te damos la bienvenida a Style. ¿En cuál de nuestros servicios estás interesado?"
     );
   });
 
-  it("joins three or more with commas and survives a missing business name", () => {
+  it("survives a missing business name and never lists services", () => {
     const text = buildGreetingMessage({
       businessName: null,
       services: [{ name: "Corte" }, { name: "Barba" }, { name: "Cejas" }],
     });
-    expect(text).toContain("Te damos la bienvenida.");
-    expect(text).toContain("Contamos con Corte, Barba y Cejas.");
+    expect(text).toBe(
+      "¡Hola! ¿Cómo estás? Te damos la bienvenida. ¿En cuál de nuestros servicios estás interesado?"
+    );
+    expect(text).not.toContain("Contamos con");
   });
 
   it("with an empty catalog does not promise services", () => {
     expect(buildGreetingMessage({ businessName: "Style", services: [] })).toMatch(/por ahora/i);
+  });
+});
+
+describe("buildServiceListMessage", () => {
+  it("lists every service with duration and price, then asks which one", () => {
+    expect(
+      buildServiceListMessage([
+        { name: "Corte", durationMinutes: 30, priceCents: 15000, currency: "MXN" },
+        { name: "Tinte", durationMinutes: 60, priceCents: 0, currency: "MXN" },
+      ])
+    ).toBe(
+      "Estos son nuestros servicios:\n- Corte · 30 min · $150 MXN\n- Tinte · 60 min\n\n¿En cuál de ellos estás interesado?"
+    );
+  });
+
+  it("with no services does not invent a list", () => {
+    expect(buildServiceListMessage([])).toMatch(/por ahora/i);
   });
 });
 

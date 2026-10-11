@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { apiError, parseBody, withAuth } from "@/lib/api";
 import { CONNECTOR_ORDER } from "@/lib/agenda-connectors";
+import { extractMapsUrl } from "@/lib/maps-coordinates";
 import { agendaDisabledResponse, agendaEnabled } from "@/server/agenda/flag";
 import {
   ADDRESS_MAX_LENGTH,
@@ -71,7 +72,7 @@ const putSchema = z.object({
 
 function isHttpsUrl(value: string): boolean {
   try {
-    return new URL(value).protocol === "https:";
+    return new URL(extractMapsUrl(value)).protocol === "https:";
   } catch {
     return false;
   }

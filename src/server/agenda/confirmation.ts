@@ -91,7 +91,7 @@ export function buildConfirmation(input: ConfirmationInput): string {
 const NO_SERVICES =
   "Por ahora no tenemos servicios disponibles para agendar. Un asesor te ayudará pronto.";
 
-/** Saludo sin intención de reservar: bienvenida y qué servicios hay. */
+/** Saludo sin intención de reservar: bienvenida y qué servicio quiere (sin lista). */
 export function buildGreetingMessage(input: {
   businessName: string | null;
   services: ReadonlyArray<{ name: string }>;
@@ -100,7 +100,17 @@ export function buildGreetingMessage(input: {
   const welcome = input.businessName?.trim()
     ? `Te damos la bienvenida a ${input.businessName.trim()}.`
     : "Te damos la bienvenida.";
-  return `¡Hola! ¿Cómo estás? ${welcome} ¿En cuál de nuestros servicios estás interesado? Contamos con ${joinNatural(input.services.map((s) => s.name))}.`;
+  return `¡Hola! ¿Cómo estás? ${welcome} ¿En cuál de nuestros servicios estás interesado?`;
+}
+
+/** Cuando el cliente pregunta qué hay: TODO el catálogo activo, con duración y precio. */
+export function buildServiceListMessage(services: readonly CatalogItem[]): string {
+  if (services.length === 0) return NO_SERVICES;
+  const lines = services.map((s) => {
+    const price = formatPriceShort(s.priceCents, s.currency);
+    return `- ${[s.name, `${s.durationMinutes} min`, price].filter(Boolean).join(" · ")}`;
+  });
+  return `Estos son nuestros servicios:\n${lines.join("\n")}\n\n¿En cuál de ellos estás interesado?`;
 }
 
 /** Paso `need_service`: qué servicios hay (con precio, si lo tienen). */
