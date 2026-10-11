@@ -1652,6 +1652,7 @@ async function agendaChecks() {
   // cancelar.
 
   await agenteMultiChecks();
+  await barberBotChecks();
 }
 
 /**
@@ -1661,11 +1662,14 @@ async function agendaChecks() {
  */
 const EXTRA_STAFF_NAME = "E2E Luz";
 const EXTRA_SERVICE_NAME = "E2E Tinte";
+// 019 — el barbero y el servicio de la historia del bot de la barbería.
+const BARBER_STAFF_NAME = "E2E Barbero";
+const BARBER_SERVICE_NAME = "E2E Fade";
 
 async function retirarExtrasAgenda() {
   const staff = (await api("/api/staff?includeInactive=1")).json?.staff ?? [];
   for (const person of staff) {
-    if (person.displayName !== EXTRA_STAFF_NAME) continue;
+    if (![EXTRA_STAFF_NAME, BARBER_STAFF_NAME].includes(person.displayName)) continue;
     const del = await api(`/api/staff/${person.id}`, { method: "DELETE" });
     if (del.res.status !== 204) {
       await api(`/api/staff/${person.id}`, {
@@ -1676,7 +1680,7 @@ async function retirarExtrasAgenda() {
   }
   const services = (await api("/api/services?includeInactive=1")).json?.services ?? [];
   for (const service of services) {
-    if (service.name !== EXTRA_SERVICE_NAME) continue;
+    if (![EXTRA_SERVICE_NAME, BARBER_SERVICE_NAME].includes(service.name)) continue;
     const del = await api(`/api/services/${service.id}`, { method: "DELETE" });
     if (del.res.status !== 204) {
       await api(`/api/services/${service.id}`, {
@@ -1760,7 +1764,7 @@ async function agenteMultiChecks() {
         await hasta(async () => (await salientes(conv5.id)).length > 0);
         const texto = (await salientes(conv5.id)).at(-1)?.text ?? "";
         ok(
-          "con un solo profesional el agente no lo menciona",
+          "con un solo profesional el agente no lo menciona (ni al auto-elegirlo)",
           texto.length > 0 && !texto.includes(sole.displayName),
           texto.slice(0, 160)
         );
@@ -1825,12 +1829,15 @@ async function agenteMultiChecks() {
         const oferta = (await salientes(conv1.id)).find((m) =>
           /a las \d{2}:\d{2}/.test(m.text ?? "")
         );
+        // 019: con profesional ya elegido, la oferta son opciones numeradas SIN
+        // repetir el nombre en cada línea; la prueba de que son de E2E Luz es la
+        // cita que queda más abajo (staff y duración efectiva).
         const lineas = (oferta?.text ?? "")
           .split("\n")
-          .filter((line) => /a las \d{2}:\d{2}/.test(line));
+          .filter((line) => /^\d\) .*a las \d{2}:\d{2}/.test(line));
         ok(
-          "(1) todos los huecos ofrecidos son de E2E Luz",
-          lineas.length > 0 && lineas.every((line) => line.includes("con E2E Luz")),
+          "(1) la oferta son opciones numeradas y no nombra a otro profesional",
+          lineas.length > 0 && !(oferta?.text ?? "").includes(sole.displayName),
           (oferta?.text ?? "").slice(0, 200)
         );
 
@@ -1904,7 +1911,7 @@ async function agenteMultiChecks() {
         const citas = await citasDe(conv3.id);
         ok(
           "(3) dice quién sí lo ofrece, sin horarios y sin cita",
-          /no ofrece/i.test(texto) &&
+          /no hace/i.test(texto) &&
             texto.includes(EXTRA_STAFF_NAME) &&
             !/a las \d{2}:\d{2}/.test(texto) &&
             citas.length === 0,
@@ -2199,25 +2206,397 @@ async function agenteMultiChecks() {
       }
     }
 
+    // 019: el primer fallo del modelo NO escala; se vuelve a preguntar el paso.
+    // Solo el segundo fallo seguido pasa a una persona (motivo `error`).
     const fromDown = `5214639${corrida}`;
     await decir(fromDown, "Lead 018 caido", "simula proveedor caido");
     const convDown = await esperarConv(fromDown);
     if (convDown) {
+      const reAsk = await hasta(async () => (await salientes(convDown.id)).length > 0);
+      let cd = (await api("/api/conversations")).json?.conversations?.find(
+        (c) => c.id === convDown.id
+      );
+      ok(
+        "proveedor de IA caído (1.er fallo): re-pregunta el paso y NO escala",
+        reAsk && !cd?.handoffAt && !cd?.handoffReason,
+        `reAsk=${reAsk} aiEnabled=${cd?.aiEnabled} reason=${cd?.handoffReason}`
+      );
+      await decir(fromDown, "Lead 018 caido", "simula proveedor caido otra vez");
       const escalo = await hasta(async () => {
         const cs = (await api("/api/conversations")).json?.conversations ?? [];
         return cs.find((c) => c.id === convDown.id)?.handoffReason === "error";
       });
       const citas = await citasDe(convDown.id);
       ok(
-        "proveedor de IA caído: el turno escala y no reserva",
+        "proveedor de IA caído (2.º fallo seguido): escala con motivo error y no reserva",
         escalo && citas.length === 0,
         `escalo=${escalo} citas=${citas.length}`
       );
     } else {
-      ok("proveedor de IA caído: el turno escala y no reserva", false, "sin conversación");
+      ok("proveedor de IA caído: re-pregunta y luego escala", false, "sin conversación");
     }
   } finally {
     await retirarExtrasAgenda();
+    if (!estaba) {
+      await api("/api/agent/profile", {
+        method: "PUT",
+        body: JSON.stringify({ enabled: false }),
+      });
+    }
+  }
+}
+
+/* ============================================================
+ * 019 — Bot de la barbería (tests/e2e/us-barber-bot.md)
+ *
+ * Servicio primero, luego profesional, luego horario; confirmación
+ * determinista; handoffs por motivo; fallo del modelo que re-pregunta; y el
+ * Laboratorio con las personas de la barbería. Todo por la app real con
+ * wa-mock + ai-mock (el mock elige por número del bloque de estado, igual que
+ * un modelo de verdad).
+ * ============================================================ */
+
+async function barberBotChecks() {
+  console.log("\n== 019: bot de la barbería ==");
+  const perfil = await api("/api/agent/profile");
+  const estaba = perfil.json?.profile?.enabled === true;
+  const corrida = Date.now().toString().slice(-6);
+  let n = 0;
+
+  const decir = (from, name, texto) => {
+    n += 1;
+    return api("/api/dev/wa-mock/inbound", {
+      method: "POST",
+      body: JSON.stringify({
+        phoneNumberId: PN,
+        from,
+        name,
+        text: texto,
+        waMessageId: `wamid.e2e.019.${corrida}.${n}`,
+      }),
+    });
+  };
+  const telefonoGuardado = (from) =>
+    from.startsWith("521") ? `52${from.slice(3)}` : from;
+  const convDe = async (from) => {
+    const phone = telefonoGuardado(from);
+    await hasta(async () =>
+      ((await api("/api/conversations")).json?.conversations ?? []).some(
+        (c) => c.contact?.phone === phone
+      )
+    );
+    return (
+      ((await api("/api/conversations")).json?.conversations ?? []).find(
+        (c) => c.contact?.phone === phone
+      ) ?? null
+    );
+  };
+  const refrescar = async (id) =>
+    ((await api("/api/conversations")).json?.conversations ?? []).find((c) => c.id === id);
+  const salientes = async (id) =>
+    ((await api(`/api/conversations/${id}/messages`)).json?.messages ?? []).filter(
+      (m) => m.direction === "out"
+    );
+  /** Espera a que haya al menos `cuantos` salientes y devuelve el último texto. */
+  const respuesta = async (id, cuantos) => {
+    await hasta(async () => (await salientes(id)).length >= cuantos);
+    return (await salientes(id)).at(-1)?.text ?? "";
+  };
+  const citasDe = async (id) =>
+    ((await api("/api/bookings")).json?.bookings ?? []).filter(
+      (b) => b.conversationId === id && b.kind !== "block"
+    );
+
+  const settingsAntes = (await api("/api/calendar/settings")).json?.settings ?? {};
+  let barberoId = null;
+  let fadeId = null;
+
+  try {
+    await api("/api/agent/profile", {
+      method: "PUT",
+      body: JSON.stringify({ enabled: true }),
+    });
+    await retirarExtrasAgenda();
+
+    // Equipo y catálogo de la historia: un barbero que hace un Fade de 40 min.
+    const barbero = await api("/api/staff", {
+      method: "POST",
+      body: JSON.stringify({
+        displayName: BARBER_STAFF_NAME,
+        jobTitle: "Barbero",
+        color: "#228855",
+      }),
+    });
+    barberoId = barbero.json?.staff?.id ?? null;
+    const fade = await api("/api/services", {
+      method: "POST",
+      body: JSON.stringify({
+        name: BARBER_SERVICE_NAME,
+        durationMinutes: 40,
+        priceCents: 15000,
+        currency: "MXN",
+      }),
+    });
+    fadeId = fade.json?.service?.id ?? null;
+    ok(
+      "alta del barbero y del servicio de la historia (201)",
+      barbero.res.status === 201 && fade.res.status === 201 && Boolean(barberoId && fadeId),
+      `staff=${barbero.res.status} service=${fade.res.status}`
+    );
+    if (!barberoId || !fadeId) return;
+    const enlace = await api(`/api/staff/${barberoId}/services/${fadeId}`, {
+      method: "PUT",
+      body: JSON.stringify({}),
+    });
+    ok("el barbero ofrece el Fade", enlace.res.ok, `status=${enlace.res.status}`);
+
+    // Local físico por la API de ajustes + horario ancho para que haya 3 opciones.
+    const DIRECCION = "Calle Reforma 123, Col. Centro";
+    const MAPAS = "https://maps.example.test/style-barber";
+    const abierto = { start: "09:00", end: "21:00" };
+    const guardado = await api("/api/calendar/settings", {
+      method: "PUT",
+      body: JSON.stringify({
+        weeklyHours: Object.fromEntries(
+          ["mon", "tue", "wed", "thu", "fri", "sat", "sun"].map((d) => [d, [abierto]])
+        ),
+        minNoticeHours: 0,
+        maxDaysAhead: 7,
+        locationAddress: DIRECCION,
+        locationMapsUrl: MAPAS,
+        arrivalLeadMinutes: 5,
+      }),
+    });
+    ok("se guarda dirección, enlace de Maps y llegada anticipada", guardado.res.ok,
+      `status=${guardado.res.status} ${JSON.stringify(guardado.json)}`);
+    const leido = (await api("/api/calendar/settings")).json?.settings;
+    ok(
+      "los ajustes del local vuelven tal cual",
+      leido?.locationAddress === DIRECCION &&
+        leido?.locationMapsUrl === MAPAS &&
+        leido?.arrivalLeadMinutes === 5,
+      JSON.stringify(leido)
+    );
+    const mapasMalo = await api("/api/calendar/settings", {
+      method: "PUT",
+      body: JSON.stringify({ locationMapsUrl: "javascript:alert(1)" }),
+    });
+    ok("un enlace de Maps que no es https se rechaza (422)", mapasMalo.res.status === 422,
+      `status=${mapasMalo.res.status}`);
+
+    console.log("\n-- camino feliz: servicio + barbero + día/hora en un mensaje --");
+    const fromH = `5214640${corrida}`;
+    await decir(
+      fromH,
+      "Lead 019 feliz",
+      `quiero un ${BARBER_SERVICE_NAME} con ${BARBER_STAFF_NAME} mañana a las 5`
+    );
+    const convH = await convDe(fromH);
+    ok("hay conversación del camino feliz", Boolean(convH));
+    if (convH) {
+      const oferta = await respuesta(convH.id, 1);
+      const opciones = oferta.split("\n").filter((l) => /^\d\) .*a las \d{2}:\d{2}/.test(l));
+      ok(
+        "el bot ofrece opciones numeradas (al menos 2) de una vez",
+        opciones.length >= 2 && /1\) /.test(oferta) && /2\) /.test(oferta),
+        oferta.slice(0, 300)
+      );
+      ok(
+        "las opciones caen después de las 17:00 (la hora pedida)",
+        opciones.length > 0 && opciones.every((l) => /a las (1[7-9]|2\d):\d{2}/.test(l)),
+        opciones.join(" | ")
+      );
+
+      const antes = await citasDe(convH.id);
+      await decir(fromH, "Lead 019 feliz", "la 2");
+      await hasta(async () => (await citasDe(convH.id)).length > antes.length);
+      const citas = await citasDe(convH.id);
+      const nueva = citas.find((b) => !antes.some((p) => p.id === b.id));
+      ok(
+        "'la 2' crea la cita con el servicio, el barbero y los 40 min",
+        nueva?.staff?.id === barberoId &&
+          nueva?.service?.id === fadeId &&
+          nueva?.durationMinutes === 40,
+        JSON.stringify({ staff: nueva?.staff, service: nueva?.service, d: nueva?.durationMinutes })
+      );
+      const segunda = opciones[1] ?? "";
+      const hora2 = /a las (\d{2}:\d{2})/.exec(segunda)?.[1] ?? "?";
+      ok(
+        "la cita quedó en la hora de la opción 2",
+        Boolean(nueva) && new Date(nueva.scheduledAtUtc).toLocaleTimeString("es-MX", {
+          timeZone: leido?.timezone ?? "America/Mexico_City",
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
+        }) === hora2,
+        `esperada=${hora2} utc=${nueva?.scheduledAtUtc}`
+      );
+
+      await hasta(async () =>
+        (await salientes(convH.id)).some((m) => (m.text ?? "").includes("Cita confirmada"))
+      );
+      const conf = (await salientes(convH.id)).find((m) =>
+        (m.text ?? "").includes("Cita confirmada")
+      )?.text ?? "";
+      ok("llega la confirmación determinista", conf.includes("Cita confirmada"), conf.slice(0, 200));
+      ok("la confirmación dice la duración (40 min)", conf.includes("40 min"), conf);
+      ok("la confirmación dice 'minutos antes' (5)", /5 minutos antes/.test(conf), conf);
+      ok(
+        "la confirmación trae la dirección y el enlace de Maps",
+        conf.includes(DIRECCION) && conf.includes(MAPAS),
+        conf
+      );
+      ok(
+        "la confirmación nombra al barbero y el precio",
+        conf.includes(BARBER_STAFF_NAME) && conf.includes("$150"),
+        conf
+      );
+      ok(
+        "presencial: ni enlace de reunión en el texto ni en la cita",
+        !/meet\.|zoom|sala-fija/i.test(conf) && !nueva?.meetingLink,
+        JSON.stringify({ conf, link: nueva?.meetingLink })
+      );
+    }
+
+    console.log("\n-- handoff: cancelar cita --");
+    const fromC = `5214641${corrida}`;
+    await decir(fromC, "Lead 019 cancela", "necesito cancelar mi cita");
+    const convC = await convDe(fromC);
+    if (convC) {
+      const hizo = await hasta(async () => (await refrescar(convC.id))?.handoffReason === "cancelacion");
+      const c = await refrescar(convC.id);
+      ok(
+        "cancelar pasa a una persona con motivo `cancelacion`",
+        hizo && Boolean(c?.handoffAt),
+        JSON.stringify({ reason: c?.handoffReason, handoffAt: c?.handoffAt })
+      );
+      await hasta(async () => (await salientes(convC.id)).length > 0, 6000);
+      const salidas = (await salientes(convC.id)).length;
+      await decir(fromC, "Lead 019 cancela", "¿hola? ¿alguien?");
+      await sleep(2500);
+      ok(
+        "con la conversación en handoff el bot ya no responde",
+        (await salientes(convC.id)).length === salidas,
+        `antes=${salidas} despues=${(await salientes(convC.id)).length}`
+      );
+    } else {
+      ok("hay conversación del handoff de cancelación", false);
+    }
+
+    console.log("\n-- pregunta frecuente: no escala --");
+    const fromF = `5214642${corrida}`;
+    const faqs = ["¿dónde queda el local?", "¿cuál es la dirección?", "¿cómo llego?"];
+    await decir(fromF, "Lead 019 faq", faqs[0]);
+    const convF = await convDe(fromF);
+    if (convF) {
+      let recibidas = true;
+      for (let i = 0; i < faqs.length; i++) {
+        if (i > 0) await decir(fromF, "Lead 019 faq", faqs[i]);
+        const antes = i;
+        const ok1 = await hasta(async () => (await salientes(convF.id)).length > antes);
+        recibidas = recibidas && ok1;
+      }
+      const c = await refrescar(convF.id);
+      ok(
+        "tres preguntas frecuentes seguidas: las tres se contestan y no hay handoff",
+        recibidas && (await salientes(convF.id)).length >= 3 &&
+          c?.aiEnabled === true && !c?.handoffAt && !c?.handoffReason,
+        JSON.stringify({ n: (await salientes(convF.id)).length, reason: c?.handoffReason })
+      );
+    } else {
+      ok("hay conversación de la pregunta frecuente", false);
+    }
+
+    console.log("\n-- camino infeliz: el modelo devuelve basura --");
+    const fromU = `5214643${corrida}`;
+    await decir(fromU, "Lead 019 basura", `quiero un ${BARBER_SERVICE_NAME}`);
+    const convU = await convDe(fromU);
+    if (convU) {
+      await respuesta(convU.id, 1);
+      const n1 = (await salientes(convU.id)).length;
+      await decir(fromU, "Lead 019 basura", "simula json invalido uno");
+      const reAsk = await respuesta(convU.id, n1 + 1);
+      let c = await refrescar(convU.id);
+      ok(
+        "1.er JSON inválido: re-pregunta el paso (sin romper) y no escala",
+        (await salientes(convU.id)).length === n1 + 1 &&
+          /Responde con el número|¿con quién|¿Qué servicio/.test(reAsk) &&
+          !c?.handoffAt && !c?.handoffReason,
+        JSON.stringify({ reAsk: reAsk.slice(0, 160), reason: c?.handoffReason })
+      );
+      await decir(fromU, "Lead 019 basura", "simula json invalido dos");
+      const escalo = await hasta(async () => (await refrescar(convU.id))?.handoffReason === "error");
+      c = await refrescar(convU.id);
+      ok(
+        "2.º JSON inválido seguido: handoff con motivo `error`",
+        escalo && Boolean(c?.handoffAt),
+        JSON.stringify({ reason: c?.handoffReason, handoffAt: c?.handoffAt })
+      );
+      ok("y sin ninguna cita de esa conversación", (await citasDe(convU.id)).length === 0);
+    } else {
+      ok("hay conversación del camino infeliz", false);
+    }
+
+    console.log("\n-- Laboratorio con las personas de la barbería --");
+    const outboxAntes = ((await api("/api/dev/wa-mock/outbox")).json?.outbox ?? []).length;
+    const corridaLab = await api("/api/lab/runs", { method: "POST" });
+    ok("el Laboratorio acepta la corrida (202)",
+      corridaLab.res.status === 202 && Boolean(corridaLab.json?.runId),
+      `status=${corridaLab.res.status}`);
+    if (corridaLab.json?.runId) {
+      const runId = corridaLab.json.runId;
+      const termino = await hasta(async () => {
+        const runs = (await api("/api/lab/runs")).json?.runs ?? [];
+        const r = runs.find((x) => x.id === runId);
+        return r?.status === "done" || r?.status === "error";
+      }, 180000, 1500);
+      ok("la corrida del Laboratorio termina", termino);
+      const det = (await api(`/api/lab/runs/${runId}`)).json;
+      const casos = det?.cases ?? [];
+      const cualitativa = new Set(["fuera_de_kb"]);
+      const rojos = casos.filter((c) => c.veredicto !== "verde").map((c) => `${c.persona}:${c.veredicto}`);
+      console.log(
+        `  [lab] score=${det?.run?.score} casos=${casos.length} no-verdes=${rojos.join(", ") || "ninguno"}`
+      );
+      ok("la corrida corrió las 16 personas", casos.length === 16, `casos=${casos.length}`);
+      const deterministas = casos.filter((c) => !cualitativa.has(c.persona));
+      ok(
+        "todas las personas deterministas salen verdes (agenda, handoffs, FAQ)",
+        deterministas.length > 0 && deterministas.every((c) => c.veredicto === "verde"),
+        rojos.join(", ")
+      );
+      const handoffs = {
+        handoff_cancelar: "cancelacion",
+        handoff_reprogramar: "reprogramacion",
+        handoff_llegada_tarde: "llegada",
+        handoff_pide_humano: "cliente",
+      };
+      ok(
+        "las personas handoff_* están verdes (cada una con su motivo)",
+        Object.keys(handoffs).every(
+          (k) => casos.find((c) => c.persona === k)?.veredicto === "verde"
+        ),
+        rojos.join(", ")
+      );
+      const outboxDespues = ((await api("/api/dev/wa-mock/outbox")).json?.outbox ?? []).length;
+      ok("el Laboratorio no envió nada a WhatsApp (sandbox)", outboxDespues === outboxAntes,
+        `antes=${outboxAntes} despues=${outboxDespues}`);
+    }
+  } finally {
+    await retirarExtrasAgenda();
+    // Restaura lo que esta historia tocó para que las secciones siguientes
+    // vean el mismo local de siempre.
+    await api("/api/calendar/settings", {
+      method: "PUT",
+      body: JSON.stringify({
+        weeklyHours: settingsAntes.weeklyHours,
+        minNoticeHours: settingsAntes.minNoticeHours,
+        maxDaysAhead: settingsAntes.maxDaysAhead,
+        locationAddress: null,
+        locationMapsUrl: null,
+        arrivalLeadMinutes: settingsAntes.arrivalLeadMinutes ?? 5,
+      }),
+    });
     if (!estaba) {
       await api("/api/agent/profile", {
         method: "PUT",

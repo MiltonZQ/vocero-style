@@ -16,6 +16,14 @@ export async function POST(req: Request) {
   if (lastUser.toLowerCase().includes("simula proveedor caido")) {
     return Response.json({ error: "down" }, { status: 500 });
   }
+  // 019 — Respuesta basura (200 pero sin JSON): ejercita la extracción robusta
+  // y el re-preguntar del paso. Solo existe tras el guard de mocks de arriba.
+  if (lastUser.toLowerCase().includes("simula json invalido")) {
+    return Response.json({
+      id: "aimock",
+      choices: [{ index: 0, message: { role: "assistant", content: "lo siento {{ no soy json" } }],
+    });
+  }
   const content = aiMockCompletion(messages);
   return Response.json({
     id: "aimock",

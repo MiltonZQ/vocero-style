@@ -2,6 +2,9 @@
 
 > Conducido con Playwright (MCP) contra `pnpm dev` con ai-mock. El KB inicial
 > NO cubre garantías/devoluciones (hueco intencional del guion).
+> Los números de score de abajo son OBSERVADOS, no estimados. Si la instancia
+> tiene un servicio de tinte en el catálogo, `agenda_tinte_no_ofrecido` sale
+> roja (88): el tinte sí se ofrece. Es del fixture, no del bot.
 
 ## Preparación
 
@@ -14,7 +17,7 @@
    ✅ La UI muestra el subtítulo permanente "Sandbox interno — no envía
    mensajes reales", progreso en vivo (n/16) sin bloquear la navegación.
 4. Al terminar:
-   ✅ Reporte con score global (15 verdes + 1 rojo ≈ 94), tarjeta de la persona
+   ✅ Reporte con score global (15 verdes + 1 rojo; **94 observado** en la corrida del 2026-10-11 con `pnpm test:e2e:local`, catálogo de la barbería sin servicios extra), tarjeta de la persona
    "Pregunta fuera del conocimiento" con hallazgo `fuera_de_kb`, evidencia y
    sugerencia; transcript visible por persona.
    ✅ Las personas `handoff_*` ("Quiere cancelar su cita", "Quiere reprogramar su cita", "Avisa que llega tarde", "Pide hablar con una persona") terminaron en handoff con su motivo (cancelacion, reprogramacion, llegada, cliente); las `agenda_*` dejaron cita `is_test` con confirmación (duración + «minutos antes») salvo las dos de servicio no ofrecido.
@@ -26,7 +29,7 @@
 5. En el hallazgo: "Agregar al conocimiento" → editar/confirmar → guardado en
    el KB (visible en `/agent`).
 6. Re-correr la evaluación.
-   ✅ El historial muestra 2 corridas; la nueva con score 100 y delta +6.
+   ✅ El historial muestra 2 corridas; la nueva con score **100 y delta +6 (observados**, 2026-10-11: 94 → 100 tras agregar al KB la política de garantías y devoluciones).
 
 ## Caminos infelices
 
