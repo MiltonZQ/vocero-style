@@ -13,9 +13,29 @@ export type ChatMessage = {
   content: string;
 };
 
+/** 020 — Lo que costó llamar al modelo (OpenRouter usage accounting). */
+export type ChatUsage = {
+  costUsd?: number;
+  promptTokens?: number;
+  completionTokens?: number;
+};
+
+/** Metadatos de la llamada, presentes en el éxito y en el error. */
+export type ChatCallMeta = {
+  model: string;
+  /** Latencia del último intento contra el proveedor, en ms. */
+  latencyMs: number;
+  /** Suma de todos los intentos (el costo es gasto real aunque se reintente). */
+  usage?: ChatUsage;
+};
+
 export type ChatJsonResult<T> =
-  | { ok: true; data: T; raw: string }
-  | { ok: false; error: "not_configured" | "provider_error" | "invalid_output"; detail: string };
+  | ({ ok: true; data: T; raw: string } & ChatCallMeta)
+  | ({
+      ok: false;
+      error: "not_configured" | "provider_error" | "invalid_output";
+      detail: string;
+    } & Partial<ChatCallMeta>);
 
 const MAX_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 500;
@@ -47,6 +67,8 @@ export async function chatJson<T>(
   }
 
   let lastDetail = "";
+  let usage: ChatUsage | undefined;
+  let latencyMs = 0;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const attemptMessages: ChatMessage[] =
       attempt === 1
@@ -59,8 +81,12 @@ export async function chatJson<T>(
                 "STRICT: tu respuesta anterior no fue JSON válido según el esquema. Responde ÚNICAMENTE el objeto JSON, sin explicaciones ni markdown.",
             },
           ];
+    const startedAt = Date.now();
     try {
-      const raw = await callProvider(model, attemptMessages, opts?.timeoutMs);
+      const call = await callProvider(model, attemptMessages, opts?.timeoutMs);
+      latencyMs = Date.now() - startedAt;
+      usage = addUsage(usage, call.usage);
+      const raw = call.content;
       const extracted = extractJson(raw);
       if (extracted === null) {
         lastDetail = `sin JSON extraíble (raw=${truncate(raw)})`;
@@ -73,8 +99,16 @@ export async function chatJson<T>(
           .join("; ")} (raw=${truncate(raw)})`;
         continue;
       }
-      return { ok: true, data: parsed.data, raw };
+      return {
+        ok: true,
+        data: parsed.data,
+        raw,
+        model,
+        latencyMs,
+        ...(usage ? { usage } : {}),
+      };
     } catch (err) {
+      latencyMs = Date.now() - startedAt;
       lastDetail = err instanceof Error ? err.message : String(err);
       if (attempt < MAX_ATTEMPTS) {
         await sleep(RETRY_DELAY_MS * attempt);
@@ -88,6 +122,40 @@ export async function chatJson<T>(
       ? "invalid_output"
       : "provider_error",
     detail: lastDetail,
+    model,
+    latencyMs,
+    ...(usage ? { usage } : {}),
+  };
+}
+
+function addUsage(total: ChatUsage | undefined, next: ChatUsage | undefined): ChatUsage | undefined {
+  if (!next) return total;
+  if (!total) return { ...next };
+  const sum = (a?: number, b?: number) => (a === undefined && b === undefined ? undefined : (a ?? 0) + (b ?? 0));
+  const costUsd = sum(total.costUsd, next.costUsd);
+  const promptTokens = sum(total.promptTokens, next.promptTokens);
+  const completionTokens = sum(total.completionTokens, next.completionTokens);
+  return {
+    ...(costUsd !== undefined ? { costUsd } : {}),
+    ...(promptTokens !== undefined ? { promptTokens } : {}),
+    ...(completionTokens !== undefined ? { completionTokens } : {}),
+  };
+}
+
+function parseUsage(raw: unknown): ChatUsage | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const u = raw as Record<string, unknown>;
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+  const costUsd = num(u.cost);
+  const promptTokens = num(u.prompt_tokens);
+  const completionTokens = num(u.completion_tokens);
+  if (costUsd === undefined && promptTokens === undefined && completionTokens === undefined) {
+    return undefined;
+  }
+  return {
+    ...(costUsd !== undefined ? { costUsd } : {}),
+    ...(promptTokens !== undefined ? { promptTokens } : {}),
+    ...(completionTokens !== undefined ? { completionTokens } : {}),
   };
 }
 
@@ -95,7 +163,7 @@ async function callProvider(
   model: string,
   messages: ChatMessage[],
   timeoutMs = 60_000
-): Promise<string> {
+): Promise<{ content: string; usage?: ChatUsage }> {
   const env = getEnv();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -107,7 +175,7 @@ async function callProvider(
         Authorization: `Bearer ${env.OPENROUTER_API_TOKEN}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ model, messages }),
+      body: JSON.stringify({ model, messages, usage: { include: true } }),
       signal: controller.signal,
     });
     if (!res.ok) {
@@ -116,12 +184,14 @@ async function callProvider(
     }
     const json = (await res.json()) as {
       choices?: { message?: { content?: string } }[];
+      usage?: unknown;
     };
     const content = json.choices?.[0]?.message?.content;
     if (typeof content !== "string" || content.length === 0) {
       throw new Error("respuesta del proveedor sin contenido");
     }
-    return content;
+    const usage = parseUsage(json.usage);
+    return { content, ...(usage ? { usage } : {}) };
   } finally {
     clearTimeout(timer);
   }

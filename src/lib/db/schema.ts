@@ -1072,6 +1072,36 @@ export const bookingDraft = pgTable(
 );
 
 /**
+ * 020 — Bitácora de eventos del bot: qué hizo en cada conversación (solo
+ * anexar). Alimenta las métricas futuras: embudo, demanda no atendida y salud
+ * del bot. El payload NUNCA lleva cuerpos de mensaje, teléfonos ni secretos.
+ * `is_test` refleja la conversación (Laboratorio) para poder excluirla.
+ */
+export const botEvent = pgTable(
+  "bot_event",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversation.id, { onDelete: "cascade" }),
+    contactId: text("contact_id").references(() => contact.id, {
+      onDelete: "set null",
+    }),
+    type: text("type").notNull(),
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull().default({}),
+    isTest: boolean("is_test").notNull().default(false),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("bot_event_org_created_idx").on(t.organizationId, t.createdAt),
+    index("bot_event_org_type_created_idx").on(t.organizationId, t.type, t.createdAt),
+  ]
+);
+
+/**
  * Credenciales del conector Zoom (app Server-to-Server del propio negocio).
  * Tabla explícita como las de WhatsApp e Instagram: unas credenciales tienen
  * forma fija y conocida, y así conservan tipado e índices. El secreto se cifra

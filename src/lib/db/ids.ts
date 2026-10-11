@@ -34,6 +34,8 @@ const prefixes = {
   service: "sv",
   // 019 — bot de barbería
   bookingDraft: "bd",
+  // 020 — bitácora de eventos del bot
+  botEvent: "be",
 } as const;
 
 export type IdKind = keyof typeof prefixes;

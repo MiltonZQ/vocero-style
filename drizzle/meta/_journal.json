@@ -120,6 +120,13 @@
       "when": 1791745780807,
       "tag": "0016_barber_bot_location_pin",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1791755998927,
+      "tag": "0017_bot_events",
+      "breakpoints": true
     }
   ]
 }

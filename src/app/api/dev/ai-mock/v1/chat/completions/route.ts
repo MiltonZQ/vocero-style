@@ -3,6 +3,9 @@ import { aiMockCompletion } from "@/server/dev/ai-mock";
 
 export const dynamic = "force-dynamic";
 
+/** 020 — Forma de `usage` de OpenRouter (usage accounting); costo cero. */
+const MOCK_USAGE = { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120, cost: 0 };
+
 export async function POST(req: Request) {
   const guard = mockGuard();
   if (guard) return guard;
@@ -22,11 +25,13 @@ export async function POST(req: Request) {
     return Response.json({
       id: "aimock",
       choices: [{ index: 0, message: { role: "assistant", content: "lo siento {{ no soy json" } }],
+      usage: MOCK_USAGE,
     });
   }
   const content = aiMockCompletion(messages);
   return Response.json({
     id: "aimock",
     choices: [{ index: 0, message: { role: "assistant", content } }],
+    usage: MOCK_USAGE,
   });
 }
