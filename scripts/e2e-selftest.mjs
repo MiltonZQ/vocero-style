@@ -1104,6 +1104,7 @@ async function main() {
   );
 
   await agendaChecks();
+  await botEventChecks();
   await aislamientoChecks();
   await atribucionChecks();
 
@@ -1653,6 +1654,124 @@ async function agendaChecks() {
 
   await agenteMultiChecks();
   await barberBotChecks();
+}
+
+
+/* ============================================================
+ * 020 — Bitácora de eventos del bot (tabla bot_event)
+ *
+ * El arnés lee la tabla directo, como ya hace la 015 para sembrar una oferta
+ * legada: solo contra una BD LOCAL (jamás contra la de producción). Sin BD
+ * local los chequeos de eventos se omiten y se dice en voz alta.
+ * ============================================================ */
+
+let eventosSql = null;
+async function eventosDe(convId) {
+  const dbUrl = process.env.DATABASE_URL ?? "";
+  let host = "";
+  try {
+    host = new URL(dbUrl).hostname;
+  } catch {}
+  if (!["localhost", "127.0.0.1", "::1", "[::1]"].includes(host)) return null;
+  if (!eventosSql) {
+    const { default: postgres } = await import("postgres");
+    eventosSql = postgres(dbUrl, { max: 1 });
+  }
+  return eventosSql`
+    select type, payload, is_test from bot_event
+    where conversation_id = ${convId} order by created_at, id
+  `;
+}
+/** Espera (los eventos se escriben DESPUÉS de enviar la respuesta) a que haya `tipos`. */
+async function esperarEventos(convId, tipos) {
+  let filas = [];
+  const llego = await hasta(async () => {
+    filas = (await eventosDe(convId)) ?? [];
+    const vistos = filas.map((f) => f.type);
+    return tipos.every((t) => vistos.includes(t));
+  }, 8000, 300);
+  return { llego, filas };
+}
+
+async function botEventChecks() {
+  console.log("\n== 020: eventos del bot (genéricos, con la agenda encendida o no) ==");
+  if ((await eventosDe("cv_inexistente")) === null) {
+    console.log("  (BD no local: los chequeos de eventos se omiten)");
+    return;
+  }
+  const perfil = await api("/api/agent/profile");
+  const estaba = perfil.json?.profile?.enabled === true;
+  const corrida = Date.now().toString().slice(-6);
+  const from = `5214650${corrida}`;
+  let n = 0;
+  const decir = (texto) => {
+    n += 1;
+    return api("/api/dev/wa-mock/inbound", {
+      method: "POST",
+      body: JSON.stringify({
+        phoneNumberId: PN,
+        from,
+        name: "Lead 020 eventos",
+        text: texto,
+        waMessageId: `wamid.e2e.020.${corrida}.${n}`,
+      }),
+    });
+  };
+  try {
+    await api("/api/agent/profile", { method: "PUT", body: JSON.stringify({ enabled: true }) });
+    await decir("hola, buenas tardes");
+    const phone = `52${from.slice(3)}`;
+    await hasta(async () =>
+      ((await api("/api/conversations")).json?.conversations ?? []).some((c) => c.contact?.phone === phone)
+    );
+    const conv = ((await api("/api/conversations")).json?.conversations ?? []).find(
+      (c) => c.contact?.phone === phone
+    );
+    ok("hay conversación de los eventos genéricos", Boolean(conv));
+    if (!conv) return;
+    const { llego, filas } = await esperarEventos(conv.id, ["turn_completed"]);
+    const turno = filas.find((f) => f.type === "turn_completed");
+    ok("un turno con el modelo registra `turn_completed`", llego, JSON.stringify(filas.map((f) => f.type)));
+    ok(
+      "`turn_completed` trae acción, modelo, latencia y tokens",
+      typeof turno?.payload?.action === "string" &&
+        turno.payload.model === "mock/model" &&
+        typeof turno.payload.latencyMs === "number" &&
+        typeof turno.payload.promptTokens === "number" &&
+        turno.payload.costUsd === 0,
+      JSON.stringify(turno?.payload)
+    );
+    ok("los eventos de una conversación real no son de prueba", filas.every((f) => f.is_test === false));
+
+    await decir("quiero hablar con un humano");
+    const h = await esperarEventos(conv.id, ["handoff"]);
+    ok(
+      "pedir un humano registra `handoff` con motivo `cliente`",
+      h.filas.some((f) => f.type === "handoff" && f.payload?.reason === "cliente"),
+      JSON.stringify(h.filas.map((f) => [f.type, f.payload]))
+    );
+    const textos = JSON.stringify(h.filas.map((f) => f.payload));
+    ok(
+      "los payloads no llevan el texto del cliente ni su teléfono",
+      !textos.includes("buenas tardes") && !textos.includes("hablar con un humano") && !textos.includes(from),
+      textos.slice(0, 200)
+    );
+
+    const encendida = /^(on|1|true|si|sí|yes)$/i.test((process.env.AGENDA ?? "").trim());
+    if (!encendida) {
+      const todos = await eventosSql`
+        select distinct type from bot_event where conversation_id = ${conv.id}
+      `;
+      const genericos = ["turn_completed", "handoff", "llm_failed"];
+      ok(
+        "con la agenda apagada solo hay eventos genéricos",
+        todos.every((t) => genericos.includes(t.type)),
+        JSON.stringify(todos.map((t) => t.type))
+      );
+    }
+  } finally {
+    await api("/api/agent/profile", { method: "PUT", body: JSON.stringify({ enabled: estaba }) });
+  }
 }
 
 /**
@@ -2548,6 +2667,39 @@ async function barberBotChecks() {
         !/meet\.|zoom|sala-fija/i.test(conf) && !nueva?.meetingLink,
         JSON.stringify({ conf, link: nueva?.meetingLink })
       );
+
+      // 020 — el embudo quedó en la bitácora, en orden.
+      const eventosH = await esperarEventos(convH.id, ["booked", "turn_completed"]);
+      if ((await eventosDe(convH.id)) === null) {
+        console.log("  (BD no local: se omiten los eventos del camino feliz)");
+      } else {
+        const tiposH = eventosH.filas.map((f) => f.type);
+        const pos = (t) => tiposH.indexOf(t);
+        ok(
+          "eventos del camino feliz: service_selected, staff_selected, slots_offered, booked y turn_completed",
+          ["service_selected", "staff_selected", "slots_offered", "booked", "turn_completed"].every(
+            (t) => pos(t) !== -1
+          ),
+          JSON.stringify(tiposH)
+        );
+        ok(
+          "el embudo va en orden: seleccionó, ofreció y luego reservó",
+          pos("service_selected") < pos("slots_offered") && pos("slots_offered") < pos("booked"),
+          JSON.stringify(tiposH)
+        );
+        const booked = eventosH.filas.find((f) => f.type === "booked")?.payload;
+        ok(
+          "`booked` trae la cita, el servicio, el barbero y el precio",
+          booked?.bookingId === nueva?.id &&
+            booked?.serviceId === fadeId &&
+            booked?.staffId === barberoId &&
+            typeof booked?.priceCents === "number" &&
+            typeof booked?.currency === "string",
+          JSON.stringify(booked)
+        );
+        const turnosH = eventosH.filas.filter((f) => f.type === "turn_completed").length;
+        ok("hubo un `turn_completed` por cada turno con el modelo (2)", turnosH === 2, `turnos=${turnosH}`);
+      }
     }
 
     console.log("\n-- reserva por hora: 'a las <hora>' elige ese horario ofrecido --");
@@ -2692,6 +2844,14 @@ async function barberBotChecks() {
         hizo && Boolean(c?.handoffAt),
         JSON.stringify({ reason: c?.handoffReason, handoffAt: c?.handoffAt })
       );
+      if ((await eventosDe(convC.id)) !== null) {
+        const evC = await esperarEventos(convC.id, ["handoff"]);
+        ok(
+          "cancelar registra `handoff` con motivo `cancelacion`",
+          evC.filas.some((f) => f.type === "handoff" && f.payload?.reason === "cancelacion"),
+          JSON.stringify(evC.filas.map((f) => [f.type, f.payload]))
+        );
+      }
       await hasta(async () => (await salientes(convC.id)).length > 0, 6000);
       const salidas = (await salientes(convC.id)).length;
       await decir(fromC, "Lead 019 cancela", "¿hola? ¿alguien?");
