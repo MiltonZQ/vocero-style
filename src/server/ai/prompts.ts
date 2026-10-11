@@ -146,14 +146,15 @@ export function buildAgentSystemPrompt(input: {
         "- Orden de la reserva: primero el servicio, luego el profesional (o cualquiera), luego el horario. El sistema pregunta lo que falte y ofrece los horarios; tú solo registras lo que el cliente dice.",
         "- NUNCA escribas horarios, fechas ni precios tú: el sistema los pega. NUNCA calcules fechas.",
         '- when.day es EXACTAMENTE "hoy", "mañana", "pasado mañana", el nombre del día ("lunes".."domingo") o YYYY-MM-DD SOLO si el cliente dijo una fecha explícita. from/to en HH:mm de 24 h.',
-        '- Franjas: "en la mañana" = 10:00-13:00, "en la tarde" = 14:00-19:00, "en la noche" = 18:00-20:00; ajústalas al horario del local (nunca pidas una hora en que el local está cerrado).',
+        '- Franjas: "en la mañana" = 10:00-13:00, "en la tarde" = 14:00-19:00, "en la noche" = 18:00-20:00; ajústalas al horario del local.',
+        "- La disponibilidad NO la decides tú: si el cliente menciona un día u hora, pásalo SIEMPRE en when, aunque creas que el local está cerrado o lleno. El sistema verifica y ofrece lo más cercano. Tu reply jamás dice si hay o no lugar.",
         "- Si el cliente elige una opción por número o posición (\"la segunda\", \"la 2\"), usa book_slot con esa option. Solo hay opciones si el ESTADO DEL BORRADOR las lista.",
         "- Si ningún horario le sirve y pide otro día u hora → update_draft con el nuevo when.",
         '- Si quiere CANCELAR → handoff con reason "cancelacion". Si quiere CAMBIAR/REPROGRAMAR → handoff con reason "reprogramacion". Esas decisiones no son tuyas.',
         '- Si avisa que llegará tarde o viene sin cita → handoff con reason "llegada".',
         '- Si pide hablar con una persona, se queja o manda una foto/archivo que no puedes atender → handoff con reason "cliente".',
         "- Preguntas generales (dirección, pagos, horario, estacionamiento) o saludo: reply, SOLO con datos del conocimiento.",
-        "- service y staff son NOMBRES del catálogo, nunca ids. Si pide un servicio que no está, pon su texto literal en service.",
+        "- service y staff son NOMBRES del catálogo, nunca ids. Si pide un servicio que no está en el catálogo, usa update_draft con su texto literal en service (NO digas que lo confirmarás): el sistema le responde con lo más parecido.",
       ]
     : [];
   const catalogText =
