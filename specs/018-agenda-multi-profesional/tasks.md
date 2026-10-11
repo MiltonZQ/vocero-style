@@ -357,16 +357,16 @@ servicios desde la API/UI; aparecen en el equipo, el catálogo y el listado de
 
 ### UI de ajustes (US1) — Slice 8
 
-- [ ] T043 [P] [US1] Crear `src/components/settings/staff-client.tsx` y
+- [x] T043 [P] [US1] Crear `src/components/settings/staff-client.tsx` y
       `src/app/(app)/settings/staff/page.tsx` («Profesionales», solo owner vía
       `guardPage`): lista con color/oficio/estado, alta y edición, activar/
       desactivar con aviso de citas por reasignar, creación de cuenta con
       contraseña temporal. Todo texto en español; estados vacío/cargando/error
-- [ ] T044 [P] [US1] Crear `src/components/settings/services-client.tsx` y
+- [x] T044 [P] [US1] Crear `src/components/settings/services-client.tsx` y
       `src/app/(app)/settings/services/page.tsx` («Servicios», solo owner):
       tabla de catálogo (nombre, duración base, precio único, moneda, oficio,
       activo), alta/edición/desactivación; reception ve solo lectura
-- [ ] T045 [US1] Editar `src/components/settings/settings-nav.tsx`: pestañas
+- [x] T045 [US1] Editar `src/components/settings/settings-nav.tsx`: pestañas
       «Profesionales» y «Servicios» visibles solo con agenda encendida y rol
       owner. Marcar lo visual como **pendiente de verificación humana** hasta
       tener capturas de Playwright (T128)
@@ -570,12 +570,12 @@ equipo ni ajustes.
 
 ### UI «Mi agenda» (US3) — Slice 8
 
-- [ ] T073 [P] [US3] Crear `src/components/agenda/my-agenda-client.tsx` y
+- [x] T073 [P] [US3] Crear `src/components/agenda/my-agenda-client.tsx` y
       `src/app/(app)/my-agenda/page.tsx`: vista del día/semana del profesional
       con sus citas y bloqueos (más los del local), acciones cancelar/mover/
       realizada/no-show, alta manual solo para sí mismo y con sus servicios,
       refresco por `useEvents`
-- [ ] T074 [US3] Editar `src/app/(app)/layout.tsx` y `src/components/app-nav.tsx`:
+- [x] T074 [US3] Editar `src/app/(app)/layout.tsx` y `src/components/app-nav.tsx`:
       pasar rol/`agendaEnabled` (vía `requireActor`) al nav con
       `src/lib/agenda-roles-ui.ts`; el staff queda con «Mi agenda»/«Mi perfil»;
       redirect post-login del staff a `/my-agenda` (SC-004, un solo paso)
@@ -643,7 +643,7 @@ agente aparece sin recargar.
 - [x] T084 [US4] Editar `src/components/app-nav.tsx` y
       `src/lib/agenda-roles-ui.ts`: entrada «Calendario» para owner/reception
       con agenda encendida
-- [ ] T085 [US4] Editar `src/components/bookings/bookings-client.tsx` y
+- [x] T085 [US4] Editar `src/components/bookings/bookings-client.tsx` y
       `src/app/(app)/bookings/page.tsx`: columnas profesional, servicio y precio;
       reacciona al nuevo `BookingDTO`
 - [x] T086 [US4] Correr `pnpm test:e2e`: verificaciones de US4 (T077) en verde;
@@ -733,15 +733,15 @@ cambiar el precio recibe 403 y no cambia nada.
 
 ### UI de perfil (US5) — Slice 8
 
-- [ ] T098 [P] [US5] Crear `src/components/agenda/photo-upload.tsx`: subir/quitar
+- [x] T098 [P] [US5] Crear `src/components/agenda/photo-upload.tsx`: subir/quitar
       foto (cuerpo crudo, errores 413/422 en español, vista previa)
-- [ ] T099 [P] [US5] Crear `src/components/agenda/hours-editor.tsx`: editor del
+- [x] T099 [P] [US5] Crear `src/components/agenda/hours-editor.tsx`: editor del
       horario semanal con «usar el horario del local», recorte visible al horario
       de apertura
-- [ ] T100 [P] [US5] Crear `src/components/agenda/staff-services-editor.tsx`:
+- [x] T100 [P] [US5] Crear `src/components/agenda/staff-services-editor.tsx`:
       lista el catálogo activo, marca/desmarca servicios y ajusta solo la
       duración; muestra el precio del catálogo en solo lectura
-- [ ] T101 [US5] Crear `src/components/agenda/profile-client.tsx` y
+- [x] T101 [US5] Crear `src/components/agenda/profile-client.tsx` y
       `src/app/(app)/my-profile/page.tsx`: foto, bio, oficio, servicios con
       duración efectiva y precio, horario efectivo y enlace a la agenda (staff y
       owner con perfil); los perfiles de otros los edita el owner desde

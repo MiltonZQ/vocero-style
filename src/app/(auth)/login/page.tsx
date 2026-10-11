@@ -21,8 +21,8 @@ export default function LoginPage() {
     setError(null);
     setLoading(true);
     const { error: err } = await signIn.email({ email, password });
-    setLoading(false);
     if (err) {
+      setLoading(false);
       setError(
         err.status === 429
           ? "Demasiados intentos. Espera unos minutos."
@@ -30,7 +30,16 @@ export default function LoginPage() {
       );
       return;
     }
-    router.push("/inbox");
+    // Mismo paso del ingreso: el staff no pasa por la bandeja. Si /api/me no
+    // responde, la bandeja sigue siendo el destino y guardPage lo corrige.
+    let next = "/inbox";
+    const me = await fetch("/api/me").catch(() => null);
+    if (me?.ok) {
+      const data = (await me.json().catch(() => null)) as { role?: unknown } | null;
+      if (data?.role === "staff") next = "/my-agenda";
+    }
+    setLoading(false);
+    router.push(next);
     router.refresh();
   }
 

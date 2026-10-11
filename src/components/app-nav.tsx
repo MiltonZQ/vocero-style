@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
@@ -12,10 +12,11 @@ import {
   LogOut,
   Settings,
   Sparkles,
+  UserRound,
   Users,
   X,
 } from "lucide-react";
-import { navKeysFor } from "@/lib/agenda-roles-ui";
+import { navKeysFor, type NavKey } from "@/lib/agenda-roles-ui";
 import { normalizeRole } from "@/lib/auth/roles";
 import type { Branding } from "@/lib/branding";
 import type { ThemePreference } from "@/lib/theme";
@@ -33,26 +34,57 @@ type NavItem = {
   badge?: boolean;
 };
 
-const NAV: NavItem[] = [
-  { href: "/inbox", label: "Bandeja", icon: Inbox, badge: true },
-  { href: "/pipeline", label: "Pipeline", icon: Kanban },
-  { href: "/contacts", label: "Contactos", icon: Users },
-  { href: "/agent", label: "Agente", icon: Sparkles },
-  { href: "/lab", label: "Laboratorio", icon: FlaskConical },
+const NAV_ITEM: Record<NavKey, NavItem> = {
+  inbox: { href: "/inbox", label: "Bandeja", icon: Inbox, badge: true },
+  pipeline: { href: "/pipeline", label: "Pipeline", icon: Kanban },
+  contacts: { href: "/contacts", label: "Contactos", icon: Users },
+  bookings: { href: "/bookings", label: "Citas", icon: CalendarDays },
+  calendar: { href: "/calendar", label: "Calendario", icon: CalendarRange },
+  agent: { href: "/agent", label: "Agente", icon: Sparkles },
+  lab: { href: "/lab", label: "Laboratorio", icon: FlaskConical },
+  settings: { href: "/settings", label: "Ajustes", icon: Settings },
+  "my-agenda": { href: "/my-agenda", label: "Mi agenda", icon: CalendarDays },
+  "my-profile": { href: "/my-profile", label: "Mi perfil", icon: UserRound },
+};
+
+/**
+ * Citas va después de Pipeline: es el paso siguiente de un trato, no una
+ * sección aparte. Calendario queda justo después, y solo si el rol lo incluye.
+ * Ajustes no va en esta lista: sigue anclado al pie.
+ */
+const NAV_ORDER: readonly NavKey[] = [
+  "inbox",
+  "pipeline",
+  "bookings",
+  "calendar",
+  "contacts",
+  "agent",
+  "lab",
+  "my-agenda",
+  "my-profile",
 ];
 
-/** 015 — "Citas" solo existe si esta instancia encendió la agenda. */
-const AGENDA_ITEM: NavItem = {
-  href: "/bookings",
-  label: "Citas",
-  icon: CalendarDays,
-};
+function visibleKeys(role: string, agenda: boolean): Set<NavKey> {
+  const normalized = normalizeRole(role);
+  if (normalized) return new Set(navKeysFor(normalized, agenda));
+  // Rol ilegible: el menú de siempre, sin calendario (eso exige un rol conocido).
+  const manager: NavKey[] = [
+    "inbox",
+    "pipeline",
+    "contacts",
+    "agent",
+    "lab",
+    "settings",
+  ];
+  if (agenda) manager.push("bookings");
+  return new Set(manager);
+}
 
-const CALENDAR_ITEM: NavItem = {
-  href: "/calendar",
-  label: "Calendario",
-  icon: CalendarRange,
-};
+function roleLabel(role: string): string {
+  if (role === "owner") return "Propietario";
+  if (role === "staff") return "Profesional";
+  return "Equipo";
+}
 
 /**
  * Un renglón del menú, como el `side-item` del mockup de la landing: texto
@@ -99,40 +131,32 @@ export function AppNav({
   const pathname = usePathname();
   const router = useRouter();
   const [unread, setUnread] = useState(0);
+  const allowed = visibleKeys(role, agenda);
+  const showInbox = allowed.has("inbox");
+  const showSettings = allowed.has("settings");
 
-  async function refetchUnread() {
+  const refetchUnread = useCallback(async () => {
     const res = await fetch("/api/conversations").catch(() => null);
     if (!res?.ok) return;
     const data = (await res.json()) as {
       conversations: { unreadCount: number }[];
     };
     setUnread(data.conversations.reduce((a, c) => a + c.unreadCount, 0));
-  }
-
-  useEffect(() => {
-    void refetchUnread();
   }, []);
 
+  useEffect(() => {
+    if (!showInbox) return;
+    void refetchUnread();
+  }, [showInbox, refetchUnread]);
+
   useEvents({
-    onMessageNew: () => void refetchUnread(),
-    onConversationUpdated: () => void refetchUnread(),
+    onMessageNew: showInbox ? () => void refetchUnread() : undefined,
+    onConversationUpdated: showInbox ? () => void refetchUnread() : undefined,
   });
 
   const sha = commit || BUILD_COMMIT;
   const settingsActive = pathname.startsWith("/settings");
-  const roleKey = normalizeRole(role);
-  const showCalendar =
-    roleKey != null && navKeysFor(roleKey, agenda).includes("calendar");
-  // Citas va después de Pipeline: es el paso siguiente de un trato, no una
-  // sección aparte. Calendario solo para dueño y recepción, con agenda.
-  const items = agenda
-    ? [
-        ...NAV.slice(0, 2),
-        AGENDA_ITEM,
-        ...(showCalendar ? [CALENDAR_ITEM] : []),
-        ...NAV.slice(2),
-      ]
-    : NAV;
+  const items = NAV_ORDER.filter((key) => allowed.has(key)).map((key) => NAV_ITEM[key]);
 
   return (
     <aside
@@ -187,13 +211,18 @@ export function AppNav({
 
       <div className="flex-1" />
 
-      <Link href="/settings" className={navItemClass(settingsActive)}>
-        <Settings
-          className={cn("h-[17px] w-[17px]", settingsActive ? "text-brand" : "text-text-3")}
-          strokeWidth={1.8}
-        />
-        Ajustes
-      </Link>
+      {showSettings && (
+        <Link href="/settings" className={navItemClass(settingsActive)}>
+          <Settings
+            className={cn(
+              "h-[17px] w-[17px]",
+              settingsActive ? "text-brand" : "text-text-3"
+            )}
+            strokeWidth={1.8}
+          />
+          Ajustes
+        </Link>
+      )}
 
       <div className="mt-1 flex items-center gap-2.5 rounded-sm px-2.5 py-2 hover:bg-accent">
         <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand-soft text-xs font-bold text-brand-text">
@@ -202,7 +231,7 @@ export function AppNav({
         <span className="min-w-0 flex-1">
           <span className="block truncate text-[13px] font-semibold">{userName}</span>
           <span className="block truncate text-[11px] text-text-3">
-            {role === "owner" ? "Propietario" : "Equipo"} · En línea
+            {roleLabel(role)} · En línea
           </span>
         </span>
         <ThemeToggle initial={theme} />

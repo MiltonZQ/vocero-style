@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { formatMoneyCents } from "@/lib/money";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -26,6 +27,10 @@ type Booking = {
   linkPending: boolean;
   isTest: boolean;
   notes: string | null;
+  staff?: { id: string; name: string } | null;
+  service?: { id: string; name: string } | null;
+  priceCents?: number | null;
+  currency?: string | null;
 };
 
 type Slot = { startUtc: string; label: string };
@@ -36,6 +41,22 @@ const STATUS_LABEL: Record<Booking["status"], string> = {
   no_show: "No asistió",
   cancelada: "Cancelada",
 };
+
+export function bookingStatusLabel(status: string): string {
+  if (status === "agendada" || status === "realizada" || status === "no_show" || status === "cancelada") {
+    return STATUS_LABEL[status];
+  }
+  return status;
+}
+
+function named(value: { name: string } | null | undefined): string {
+  const name = value?.name?.trim();
+  return name ? name : "—";
+}
+
+function priceText(cents: number | null | undefined, currency: string | null | undefined): string {
+  return formatMoneyCents(cents, currency ?? "MXN") ?? "—";
+}
 
 export function BookingsClient() {
   const [bookings, setBookings] = useState<Booking[] | null>(null);
@@ -182,7 +203,7 @@ export function BookingsClient() {
                 <Badge
                   variant={b.status === "cancelada" ? "secondary" : "default"}
                 >
-                  {STATUS_LABEL[b.status]}
+                  {bookingStatusLabel(b.status)}
                 </Badge>
                 {b.kind === "block" ? (
                   <Badge variant="secondary">Bloqueo</Badge>
@@ -195,6 +216,12 @@ export function BookingsClient() {
                 {b.linkPending && b.status !== "cancelada" && (
                   <Badge variant="secondary">Sin enlace</Badge>
                 )}
+              </div>
+
+              <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-text-2">
+                <span>Profesional: {named(b.staff)}</span>
+                <span>Servicio: {named(b.service)}</span>
+                <span>Precio: {priceText(b.priceCents, b.currency)}</span>
               </div>
 
               <div className="flex flex-wrap items-center gap-3 text-sm text-text-3">

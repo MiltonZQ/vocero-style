@@ -16,6 +16,10 @@ const TABS: Tab[] = [
 /** 015 — "Agenda" solo existe si esta instancia encendió la bandera. */
 const AGENDA_TAB: Tab = { href: "/settings/calendar", label: "Agenda" };
 
+/** 018 — Catálogo del equipo. Solo el dueño, y solo con la agenda encendida. */
+const STAFF_TAB: Tab = { href: "/settings/staff", label: "Profesionales" };
+const SERVICES_TAB: Tab = { href: "/settings/services", label: "Servicios" };
+
 /** 016 — Igual con "Anuncios" y la bandera ATRIBUCION. */
 const ADS_TAB: Tab = { href: "/settings/ads", label: "Anuncios" };
 
@@ -26,20 +30,26 @@ export function SettingsNav({
   agenda = false,
   atribucion = false,
   messenger = false,
+  role,
 }: {
   agenda?: boolean;
   atribucion?: boolean;
   messenger?: boolean;
+  /** Sin rol, o cualquier rol que no sea owner, no ve Profesionales ni Servicios. */
+  role?: string;
 }) {
   const pathname = usePathname();
   // Qué pestañas existen lo decide el servidor y baja por prop: este es un
   // componente de cliente y no puede leer variables de entorno.
   // Messenger va junto a WhatsApp: son las dos conexiones de mensajería.
+  // Profesionales y Servicios no son de recepción ni de staff.
+  const catalog = agenda && role === "owner";
   const tabs = [
     ...TABS.slice(0, 1),
     ...(messenger ? [MESSENGER_TAB] : []),
     ...TABS.slice(1),
     ...(agenda ? [AGENDA_TAB] : []),
+    ...(catalog ? [STAFF_TAB, SERVICES_TAB] : []),
     ...(atribucion ? [ADS_TAB] : []),
   ];
   return (

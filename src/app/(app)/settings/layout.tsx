@@ -13,7 +13,7 @@ export default async function SettingsLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   // 018: ningún ajuste es del staff (cubre todas las páginas de ajustes).
-  await requirePageActor(["owner", "reception"]);
+  const actor = await requirePageActor(["owner", "reception"]);
   return (
     <div className="flex h-full flex-col">
       <header className="border-b px-4 py-3 sm:px-6 sm:py-4">
@@ -22,6 +22,7 @@ export default async function SettingsLayout({
       {/* En móvil las pestañas van arriba (en fila), no como columna lateral. */}
       <div className="flex min-h-0 flex-1 flex-col sm:flex-row">
         <SettingsNav
+          role={actor.role}
           agenda={agendaEnabled()}
           atribucion={atribucionEnabled()}
           messenger={isChannelEnabled("messenger")}
